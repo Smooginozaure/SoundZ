@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <uxtheme.h>
 #include <windowsx.h>
 
@@ -40,6 +41,8 @@ constexpr UINT WM_APP_DEVICE_LOST = WM_APP + 1;
 constexpr UINT_PTR kStatusTimer = 1;
 constexpr UINT_PTR kVolumeTimer = 2;
 constexpr UINT_PTR kVoiceTimer = 3;
+constexpr UINT_PTR kTaskbarTimer = 4;   // bouton de la barre des tâches refait 1,5 s après l'apparition…
+constexpr UINT_PTR kTaskbarTimer2 = 5;  // … et encore à 5 s (Windows le place parfois en retard)
 constexpr int kTickCount = PitchEngine::kMaxSemitones - PitchEngine::kMinSemitones + 1;
 constexpr int kWidth = 400;   // largeur de la fenêtre (DIP)
 constexpr int kPageTop = 46;  // sous les onglets
@@ -707,6 +710,18 @@ void createTooltips() {
     SendMessageW(g_tooltips, TTM_SETDELAYTIME, TTDT_INITIAL, 300);
 }
 
+// Windows calcule parfois mal, au lancement, la largeur du bouton de SoundZ dans la barre des tâches (44 px :
+// l'icône seule, le nom coupé). On lui fait refaire ce bouton une fois la fenêtre affichée.
+void refreshTaskbarButton() {
+    ITaskbarList* taskbar = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&taskbar)))) return;
+    if (SUCCEEDED(taskbar->HrInit())) {
+        taskbar->DeleteTab(ui.wnd);
+        taskbar->AddTab(ui.wnd);
+    }
+    taskbar->Release();
+}
+
 void layout() {
     createFonts();
     // Les onglets : des « pastilles », l'onglet ouvert en teinte Orage.
@@ -996,6 +1011,10 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == kStatusTimer) updateStatus();
         if (wp == kVolumeTimer) followVolume();
+        if (wp == kTaskbarTimer || wp == kTaskbarTimer2) {
+            KillTimer(wnd, wp);
+            refreshTaskbarButton();
+        }
         if (wp == kVoiceTimer) {
             voicepage::onTimer();
             soundpage::onTimer();
@@ -1175,6 +1194,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     bool atStartup = false;
     for (int i = 1; i < argc; ++i) atStartup = atStartup || std::wstring(argv[i]) == shellint::kStartupArgument;
     ShowWindow(ui.wnd, atStartup ? SW_SHOWMINNOACTIVE : show);
+    SetTimer(ui.wnd, kTaskbarTimer, 1500, nullptr);
+    SetTimer(ui.wnd, kTaskbarTimer2, 5000, nullptr);
     UpdateWindow(ui.wnd);
     SetFocus(g_page == 0 ? g.slider : g_tabs[g_page]);
 
