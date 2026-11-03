@@ -1,0 +1,40 @@
+name: "💡 Proposer une fonctionnalité"
+description: "Une idée pour améliorer SoundZ."
+title: "[Idée] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci pour ton idée ! Décris-la simplement : pas besoin de termes techniques.
+  - type: textarea
+    id: idee
+    attributes:
+      label: "Quelle fonctionnalité ?"
+      description: "Ce que SoundZ devrait faire."
+      placeholder: "Ex. : pouvoir régler le volume de chaque son du soundboard avec la molette."
+    validations:
+      required: true
+  - type: textarea
+    id: pourquoi
+    attributes:
+      label: "À quoi te servirait-elle ?"
+      description: "Dans quelle situation tu en aurais besoin."
+  - type: dropdown
+    id: onglet
+    attributes:
+      label: "Ça concerne…"
+      options:
+        - "L'onglet Musique"
+        - "L'onglet Voix (micro)"
+        - "L'onglet Soundboard"
+        - "Le menu ⚙, les réglages"
+        - "Quelque chose de nouveau"
+    validations:
+      required: true
+  - type: textarea
+    id: environnement
+    attributes:
+      label: "Ton installation"
+      description: "Rempli tout seul par le bouton 🪳 de SoundZ (facultatif)."
+      render: text

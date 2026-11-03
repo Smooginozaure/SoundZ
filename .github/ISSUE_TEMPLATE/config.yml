@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "📖 Guide de SoundZ"
+    url: https://github.com/Smooginozaure/SoundZ/blob/main/GUIDE.md
+    about: "Installation, onglets, réglages de Discord, problèmes fréquents."
+  - name: "🔌 Câbles virtuels : toutes les solutions"
+    url: https://github.com/Smooginozaure/SoundZ/blob/main/CABLES.md
+    about: "Installer un câble virtuel, avec ou sans VB-CABLE A+B."

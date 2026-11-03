@@ -16,7 +16,7 @@ for %%f in (engine default_output main selftest voice_engine voice_page sound_pa
   "%BIN%\clang++.exe" %COMMON% -std=c++17 -ffast-math -c src\%%f.cpp -o build\%%f.o || exit /b 1
 )
 "%BIN%\windres.exe" -i src\app.rc -o build\app.o --include-dir src || exit /b 1
-"%BIN%\clang++.exe" -municode -mwindows -static -s build\*.o -o dist\SoundZ.exe -lole32 -lcomctl32 -luuid -lshell32 -lcomdlg32 -lmsimg32 -lwindowscodecs -ld2d1 -ldwrite -lshlwapi -lgdiplus -ldwmapi -luxtheme || exit /b 1
+"%BIN%\clang++.exe" -municode -mwindows -static -s build\*.o -o dist\SoundZ.exe -lole32 -lcomctl32 -luuid -lshell32 -lcomdlg32 -lmsimg32 -lwindowscodecs -ld2d1 -ldwrite -lshlwapi -lgdiplus -ldwmapi -luxtheme -lversion || exit /b 1
 echo OK : dist\SoundZ.exe
 rem Mise à jour de la version installée (C:\Outils\SoundZ), si SoundZ n'est pas ouvert.
 if exist "C:\Outils\SoundZ\" (

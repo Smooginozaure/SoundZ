@@ -33,6 +33,7 @@ Comme le soundboard de Discord, mais avec **n'importe quel son entendu sur ton P
 - **Aucun réglage obligatoire.** SoundZ prend ton casque et ton micro habituels, met les câbles virtuels par défaut le temps de fonctionner, puis **remet tout comme avant** à la fermeture.
 - Le menu ⚙ propose un **choix des appareils** (automatique ou précis), un **raccourci** dans le menu Démarrer et sur le Bureau, le **lancement avec Windows**, et l'option « **réduire au lieu de fermer** ».
 - **Thème sombre et sobre**, teinte bleu-gris « Orage ».
+- Le bouton **🪳**, à côté de ⚙, sert à **signaler un bug** ou **proposer une fonctionnalité** : il ouvre un ticket GitHub déjà rempli avec les informations utiles. Il faut un compte GitHub (gratuit).
 
 ## Comment ça marche
 
@@ -53,6 +54,10 @@ Un seul câble suffit pour la voix et le soundboard. SoundZ reconnaît tout seul
 4. Dans Discord : périphérique d'entrée sur **Default**, et suppression du bruit sur **Aucune**.
 
 Tout le reste est expliqué dans le **[guide](GUIDE.md)**.
+
+## Un bug, une idée ?
+
+Clique sur **🪳** dans SoundZ, ou ouvre directement un **[ticket GitHub](https://github.com/Smooginozaure/SoundZ/issues/new/choose)** : « Signaler un bug » ou « Proposer une fonctionnalité ».
 
 ## Vie privée
 

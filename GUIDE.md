@@ -76,6 +76,8 @@ Pour les autres applis : choisis le micro **« Par défaut »**, ou la sortie de
 | Mauvais casque ou mauvais micro | ⚙ → **Appareils…** → choisis le bon. |
 | Les amis n'entendent pas les sons | Onglet Voix : la voix doit être active. Dans Discord : suppression du bruit sur « Aucune ». |
 
+**Un autre problème, ou une idée ?** Clique sur **🪳**, à côté de ⚙, puis sur **Signaler un bug** ou **Proposer une fonctionnalité**. Un ticket GitHub s'ouvre, déjà rempli avec ta version de SoundZ, de Windows et tes câbles virtuels. Il te reste à décrire le problème. Il faut un compte GitHub, gratuit.
+
 ## 7. Désinstaller
 
 Dans **⚙**, décoche le menu Démarrer, le Bureau et le lancement avec Windows. Clique sur **Quitter SoundZ**, puis supprime le dossier de SoundZ. C'est tout.

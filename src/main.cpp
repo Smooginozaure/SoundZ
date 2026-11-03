@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <uxtheme.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include "ui.h"
 #include "util.h"
 #include "shell_integration.h"
+#include "sound_image.h"
 #include "sound_page.h"
 #include "voice_page.h"
 
@@ -45,6 +47,7 @@ constexpr int kPageTop = 46;  // sous les onglets
 enum ControlId : int {
     IDC_TAB0 = 90,  // … IDC_TAB0 + 2 : les trois onglets
     IDC_OPTIONS = 95,  // ⚙ : raccourcis, lancement avec Windows
+    IDC_FEEDBACK = 96, // 🪳 : signaler un bug, proposer une fonctionnalité (sur GitHub)
     IDC_RESET = 100,
     IDC_TOGGLE,
     IDC_SETTINGS,
@@ -91,6 +94,11 @@ struct PitchPage {
 
 HWND g_tabs[3] = {};  // onglets (boutons « pastille » du thème)
 HWND g_options = nullptr;  // ⚙
+HWND g_feedback = nullptr;  // 🪳
+HWND g_tooltips = nullptr;  // bulles d'aide (🪳, ⚙)
+soundimg::Image g_bugImage;
+HBITMAP g_bugBitmap = nullptr;
+int g_bugPx = 0;
 
 // Page « Appareils » : la sortie (là où l'on écoute) et le micro, en automatique ou choisis un par un.
 struct DevicesPage {
@@ -566,12 +574,146 @@ void createDevicesPage() {
     theme::darkControl(d.micCombo);
 }
 
+// ---------------------------------------------------------------- 🪳 signaler un bug, proposer une fonctionnalité
+
+constexpr wchar_t kIssuesUrl[] = L"https://github.com/Smooginozaure/SoundZ/issues/new";
+
+// Version de SoundZ, lue dans les propriétés de l'exe (app.rc).
+std::wstring soundzVersion() {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    DWORD ignored = 0, size = GetFileVersionInfoSizeW(exe, &ignored);
+    std::vector<BYTE> data(size);
+    wchar_t* value = nullptr;
+    UINT length = 0;
+    if (size && GetFileVersionInfoW(exe, 0, size, data.data()) &&
+        VerQueryValueW(data.data(), L"\\StringFileInfo\\040C04B0\\ProductVersion", reinterpret_cast<void**>(&value), &length) && value)
+        return value;
+    return L"?";
+}
+
+// « Windows 11 24H2 (10.0.26100) » : le vrai numéro, même si l'exe n'est pas déclaré pour la dernière version.
+std::wstring windowsVersion() {
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+    OSVERSIONINFOW info = {sizeof(info)};
+    if (auto get = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))) get(&info);
+    wchar_t display[64] = {};
+    DWORD size = sizeof(display);
+    RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"DisplayVersion", RRF_RT_REG_SZ, nullptr,
+                 display, &size);
+    std::wstring name = info.dwBuildNumber >= 22000 ? L"Windows 11" : L"Windows 10";
+    return name + (display[0] ? L" " + std::wstring(display) : L"") + L" (" + std::to_wstring(info.dwMajorVersion) + L"." +
+           std::to_wstring(info.dwMinorVersion) + L"." + std::to_wstring(info.dwBuildNumber) + L")";
+}
+
+// Ce qui aide à comprendre un problème : versions, câbles virtuels, appareils utilisés. Aucune donnée personnelle ;
+// la personne voit tout dans le navigateur avant d'envoyer.
+std::wstring environmentReport() {
+    auto cableName = [](int i) {
+        return i >= 0 ? g.devices[size_t(i)].name.substr(0, g.devices[size_t(i)].name.find(L" (")) : std::wstring(L"aucun");
+    };
+    const wchar_t* tabs[] = {L"Musique", L"Voix (micro)", L"Soundboard", L"Appareils"};
+    std::wstring out = iniRead(L"vocoder", L"sortie");
+    std::wstring mic = iniRead(L"voix", L"micro");
+    return L"SoundZ : " + soundzVersion() + L"\n" + L"Windows : " + windowsVersion() + L"\n" + L"Câbles virtuels : " +
+           std::to_wstring(g.cables.count) + L" trouvé(s) ; musique → " + cableName(g.cables.music) + L", voix → " +
+           cableName(g.cables.voice) + L"\n" + L"Sortie : " + (ui.listenName.empty() ? std::wstring(L"aucune") : ui.listenName) +
+           (out.empty() ? L" (automatique)" : L" (choisie)") + L"\n" + L"Micro : " + voicepage::currentMicName() +
+           (mic.empty() ? L" (automatique)" : L" (choisi)") + L"\n" + L"Musique : " +
+           (g.engine.running() ? L"active" : g.error.empty() ? L"désactivée" : L"erreur — " + g.error) + L"\n" +
+           L"Voix : " + (voicepage::running() ? L"active" : L"inactive") + L"\n" + L"Onglet ouvert : " +
+           tabs[std::clamp(g_page, 0, 3)];
+}
+
+std::wstring urlEncode(const std::wstring& text) {
+    std::string utf8 = narrow(text);
+    std::wstring out;
+    const char* hex = "0123456789ABCDEF";
+    for (unsigned char c : utf8) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += wchar_t(c);
+        } else {
+            out += L'%';
+            out += wchar_t(hex[c >> 4]);
+            out += wchar_t(hex[c & 15]);
+        }
+    }
+    return out;
+}
+
+// Ouvre le formulaire GitHub (bug.yml ou feature.yml), avec la case « Ton installation » déjà remplie.
+void openIssue(const wchar_t* form) {
+    std::wstring url = std::wstring(kIssuesUrl) + L"?template=" + form + L"&environnement=" + urlEncode(environmentReport());
+    ShellExecuteW(ui.wnd, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void showFeedback() {
+    enum { kBug = 1, kFeature };
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, kBug, L"Signaler un bug…");
+    AppendMenuW(menu, MF_STRING, kFeature, L"Proposer une fonctionnalité…");
+    RECT r;
+    GetWindowRect(g_feedback, &r);
+    int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom + S(4), 0, ui.wnd, nullptr);
+    DestroyMenu(menu);
+    if (choice == kBug) openIssue(L"bug.yml");
+    if (choice == kFeature) openIssue(L"feature.yml");
+}
+
+// Le bouton 🪳 : l'emoji en couleur, surligné au survol (comme les onglets).
+void drawFeedbackButton(const DRAWITEMSTRUCT* d) {
+    RECT rc = d->rcItem;
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    HDC dc = CreateCompatibleDC(d->hDC);
+    HBITMAP canvas = CreateCompatibleBitmap(d->hDC, w, h);
+    HGDIOBJ old = SelectObject(dc, canvas);
+    RECT all = {0, 0, w, h};
+    FillRect(dc, &all, theme::brush(theme::kBg));
+    const bool pressed = d->itemState & ODS_SELECTED, hover = theme::isHover(d->hwndItem);
+    if (hover || pressed) theme::roundRect(dc, all, float(S(6)), pressed ? theme::kSurfacePressed : theme::kSurface);
+    if ((d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT)) theme::roundFrame(dc, all, float(S(6)), theme::kAccentLight, 1.5f);
+    const int px = S(18);
+    if (g_bugImage.empty()) soundimg::renderText(L"🪳", g_bugImage);
+    if (!g_bugBitmap || g_bugPx != px) {
+        if (g_bugBitmap) DeleteObject(g_bugBitmap);
+        g_bugBitmap = soundimg::makeBitmap(g_bugImage, px);
+        g_bugPx = px;
+    }
+    soundimg::draw(dc, g_bugBitmap, (w - px) / 2, (h - px) / 2 + (pressed ? 1 : 0), px);
+    BitBlt(d->hDC, rc.left, rc.top, w, h, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteObject(canvas);
+    DeleteDC(dc);
+}
+
+// Bulles d'aide au survol des deux boutons ronds (thème sombre de Windows).
+void createTooltips() {
+    g_tooltips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT,
+                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, ui.wnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SetWindowTheme(g_tooltips, L"DarkMode_Explorer", nullptr);
+    const struct { HWND control; const wchar_t* text; } tips[] = {
+        {g_feedback, L"Signaler un bug  ·  Proposer une fonctionnalité"},
+        {g_options, L"Options : appareils, raccourcis, lancement avec Windows"},
+    };
+    for (const auto& t : tips) {
+        TOOLINFOW info = {};
+        info.cbSize = sizeof(info);
+        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.hwnd = ui.wnd;
+        info.uId = UINT_PTR(t.control);
+        info.lpszText = const_cast<wchar_t*>(t.text);
+        SendMessageW(g_tooltips, TTM_ADDTOOLW, 0, LPARAM(&info));
+    }
+    SendMessageW(g_tooltips, TTM_SETDELAYTIME, TTDT_INITIAL, 300);
+}
+
 void layout() {
     createFonts();
     // Les onglets : des « pastilles », l'onglet ouvert en teinte Orage.
-    const int tabWidth[3] = {86, 112, 108};
+    const int tabWidth[3] = {80, 106, 102};
     for (int i = 0, x = 12; i < 3; x += tabWidth[i] + 6, ++i) place(g_tabs[i], x, 8, tabWidth[i], 30, ui.font);
     place(g_options, kWidth - 12 - 34, 8, 34, 30, ui.font);
+    place(g_feedback, kWidth - 12 - 34 - 4 - 34, 8, 34, 30, ui.font);
     int pitchBottom = layoutPitch(kPageTop, g_page == 0);
     int voiceBottom = voicepage::layout(kPageTop, g_page == 1);
     int soundBottom = soundpage::layout(kPageTop, g_page == 2);
@@ -661,6 +803,9 @@ void createControls() {
     }
     g_options = theme::button(L"⚙", theme::Kind::kTab, IDC_OPTIONS);
     ShowWindow(g_options, SW_SHOW);
+    g_feedback = theme::button(L"", theme::Kind::kTile, IDC_FEEDBACK);  // dessiné ici : l'emoji 🪳 en couleur
+    ShowWindow(g_feedback, SW_SHOW);
+    createTooltips();
 
     g.label = makeControl(L"STATIC", L"", SS_CENTER | SS_CENTERIMAGE);
     g.slider = makeSlider(PitchEngine::kMinSemitones, PitchEngine::kMaxSemitones, TBS_AUTOTICKS);
@@ -720,6 +865,8 @@ int runDeviceTest(const std::wstring& reportPath) {
                  L"\r\nsas de la musique : " + name(g.sasIndex) + L"\r\n";
     }
     report += voicepage::deviceReport();
+    report += L"\r\n--- case « Ton installation » d'un ticket 🪳 ---\r\n" + environmentReport() + L"\r\n\r\n--- lien du ticket ---\r\n" +
+              std::wstring(kIssuesUrl) + L"?template=bug.yml&environnement=" + urlEncode(environmentReport()) + L"\r\n";
     std::string utf8 = narrow(report);
     if (FILE* f = _wfopen(reportPath.c_str(), L"wb")) {
         fwrite("\xEF\xBB\xBF", 1, 3, f);
@@ -775,6 +922,10 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             showPage(LOWORD(wp) - IDC_TAB0);
             return 0;
         }
+        if (LOWORD(wp) == IDC_FEEDBACK && HIWORD(wp) == BN_CLICKED) {
+            showFeedback();
+            return 0;
+        }
         if (LOWORD(wp) == IDC_OPTIONS && HIWORD(wp) == BN_CLICKED) {
             showOptions();
             return 0;
@@ -827,6 +978,10 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DRAWITEM:
         if (theme::drawItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lp))) return TRUE;
+        if (reinterpret_cast<const DRAWITEMSTRUCT*>(lp)->CtlID == IDC_FEEDBACK) {
+            drawFeedbackButton(reinterpret_cast<const DRAWITEMSTRUCT*>(lp));
+            return TRUE;
+        }
         if (soundpage::onDrawItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lp))) return TRUE;
         break;
 

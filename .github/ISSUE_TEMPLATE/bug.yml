@@ -1,0 +1,52 @@
+name: "🪳 Signaler un bug"
+description: "Quelque chose ne marche pas comme prévu dans SoundZ."
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de prendre le temps de signaler un problème ! Plus la description est précise, plus il sera corrigé vite.
+        Le bouton 🪳 de SoundZ remplit tout seul la case « Ton installation » en bas de cette page.
+  - type: textarea
+    id: description
+    attributes:
+      label: "Que s'est-il passé ?"
+      description: "Ce que tu as vu ou entendu, et ce que tu attendais à la place."
+      placeholder: "Ex. : quand je change de tonalité, la musique se coupe une seconde."
+    validations:
+      required: true
+  - type: textarea
+    id: etapes
+    attributes:
+      label: "Comment le reproduire ?"
+      description: "Les étapes pour que le problème se produise, si tu les connais."
+      placeholder: |
+        1. Ouvrir l'onglet Musique
+        2. Mettre le curseur sur +2
+        3. …
+  - type: dropdown
+    id: onglet
+    attributes:
+      label: "Où ça se passe ?"
+      options:
+        - "Onglet Musique"
+        - "Onglet Voix (micro)"
+        - "Onglet Soundboard"
+        - "Menu ⚙ / page Appareils"
+        - "Installation, câbles virtuels"
+        - "Discord, WhatsApp ou une autre appli"
+        - "Autre"
+    validations:
+      required: true
+  - type: textarea
+    id: environnement
+    attributes:
+      label: "Ton installation"
+      description: "Rempli tout seul par le bouton 🪳 de SoundZ. Sinon : version de SoundZ et de Windows, câbles virtuels installés."
+      render: text
+  - type: textarea
+    id: complement
+    attributes:
+      label: "Autre chose ?"
+      description: "Capture d'écran, enregistrement… (glisse les fichiers ici)."
