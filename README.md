@@ -2,7 +2,7 @@
 
 # SoundZ
 
-*Version 1.0.0* — 📥 **[Télécharger](https://github.com/Smooginozaure/SoundZ/releases/latest)** · 📖 **[Guide](GUIDE.md)** · ⚖️ **[Licence](LICENCE.md)**
+*Version 1.0.0* — 📥 **[Télécharger](https://github.com/Smooginozaure/SoundZ/releases/latest)** · 📖 **[Guide](GUIDE.md)** · 🔌 **[Câbles virtuels](CABLES.md)** · ⚖️ **[Licence](LICENCE.md)**
 
 ![Windows 10 et 11](https://img.shields.io/badge/Windows-10%20et%2011-3e5068?style=flat-square) ![Portable](https://img.shields.io/badge/installation-aucune-3e5068?style=flat-square) ![Gratuit](https://img.shields.io/badge/prix-gratuit-3e5068?style=flat-square)
 
@@ -36,16 +36,18 @@ Comme le soundboard de Discord, mais avec **n'importe quel son entendu sur ton P
 
 ## Comment ça marche
 
-Windows ne laisse aucun programme modifier le son en route vers ta carte son ou venant de ton micro. SoundZ passe donc par des **câbles audio virtuels** de VB-Audio :
+Windows ne laisse aucun programme modifier le son en route vers ta carte son ou venant de ton micro. SoundZ passe donc par des **câbles audio virtuels** :
 
 ```
-Musique :  applis du PC  →  CABLE Input (sas inaudible)  →  SoundZ : transposition  →  ton casque
-Voix :     ton micro  →  SoundZ : effet + sons du soundboard  →  CABLE-A  ⇒  micro de Discord, WhatsApp…
+Musique :  applis du PC  →  câble n° 1 (sas inaudible)  →  SoundZ : transposition  →  ton casque
+Voix :     ton micro  →  SoundZ : effet + sons du soundboard  →  câble n° 2  ⇒  micro de Discord, WhatsApp…
 ```
+
+Un seul câble suffit pour la voix et le soundboard. SoundZ reconnaît tout seul VB-CABLE, VB-CABLE A+B, Hi-Fi Cable et Voicemeeter, et répartit les câbles qu'il trouve. Le détail est dans **[CABLES.md](CABLES.md)**.
 
 ## Installation
 
-1. Installe **[VB-CABLE](https://vb-audio.com/Cable/)** (gratuit) et **VB-CABLE A+B** (en donation, même page), puis redémarre. À l'installation, chaque câble se met par défaut : remets ensuite ton casque et ton micro dans les paramètres Son de Windows.
+1. Installe un **câble audio virtuel** : **[VB-CABLE](https://vb-audio.com/Cable/)** est gratuit et suffit pour la voix et le soundboard. Pour transposer aussi la musique, ajoute un deuxième câble : **Hi-Fi Cable** (gratuit) ou **VB-CABLE A+B** (sur don). Toutes les solutions, pas à pas : **[CABLES.md](CABLES.md)**. Redémarre, puis remets ton casque et ton micro par défaut dans les paramètres Son de Windows : à l'installation, chaque câble se met tout seul par défaut.
 2. Télécharge **[la dernière version](https://github.com/Smooginozaure/SoundZ/releases/latest)**, puis décompresse-la dans un dossier à toi, par exemple `C:\Outils\SoundZ`.
 3. Lance **`SoundZ.exe`**. Si Windows affiche « Windows a protégé votre ordinateur », clique sur **Informations complémentaires**, puis **Exécuter quand même**.
 4. Dans Discord : périphérique d'entrée sur **Default**, et suppression du bruit sur **Aucune**.
@@ -60,7 +62,7 @@ SoundZ fonctionne entièrement sur ton PC. Tes réglages et tes sons restent dan
 
 **SoundZ est gratuit** pour tous ceux qui le téléchargent depuis cette page GitHub, **sans le modifier**. La modification, la redistribution et l'usage commercial demandent l'autorisation de l'auteur. Conditions complètes : **[LICENCE.md](LICENCE.md)**.
 
-SoundZ utilise [miniaudio](https://github.com/mackron/miniaudio) (domaine public ou MIT-0), ainsi que [signalsmith-stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) et [signalsmith-linear](https://github.com/Signalsmith-Audio/linear) (MIT). Les câbles virtuels VB-CABLE sont des logiciels de VB-Audio Software, non fournis avec SoundZ.
+SoundZ utilise [miniaudio](https://github.com/mackron/miniaudio) (domaine public ou MIT-0), ainsi que [signalsmith-stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) et [signalsmith-linear](https://github.com/Signalsmith-Audio/linear) (MIT). Les câbles virtuels (VB-CABLE, Hi-Fi Cable, Voicemeeter…) sont des logiciels de VB-Audio Software, non fournis avec SoundZ.
 
 ## Compiler
 

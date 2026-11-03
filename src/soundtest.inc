@@ -424,3 +424,49 @@ int runShellTest(const std::wstring& reportPath) {
     CoUninitialize();
     return failures == 0 ? 0 : 1;
 }
+
+// « SoundZ.exe --cabletest rapport.txt » : répartition des câbles virtuels entre musique et voix, pour toutes les
+// installations possibles (listes d'appareils simulées : rien n'est ouvert).
+#include "cables.h"
+
+int runCableTest(const std::wstring& reportPath) {
+    struct Case {
+        const char* name;
+        std::vector<std::wstring> outputs;
+        bool singleForMusic;
+        const wchar_t* music;  // attendu (début du nom), ou nullptr
+        const wchar_t* voice;
+    };
+    const std::wstring g8 = L"Haut-parleurs (Sound Blaster G8 USB-1)";
+    const std::wstring vb = L"CABLE Input (VB-Audio Virtual Cable)", a = L"CABLE-A Input (VB-Audio Virtual Cable A)",
+                       b = L"CABLE-B Input (VB-Audio Virtual Cable B)", hifi = L"Hi-Fi Cable Input (VB-Audio Hi-Fi Cable)",
+                       vm = L"Voicemeeter Input (VB-Audio Voicemeeter VAIO)";
+    const Case cases[] = {
+        {"VB-CABLE + A+B", {g8, vb, a, b}, false, L"CABLE Input", L"CABLE-A Input"},
+        {"VB-CABLE seul (gratuit)", {g8, vb}, false, nullptr, L"CABLE Input"},
+        {"VB-CABLE seul, donné à la musique", {g8, vb}, true, L"CABLE Input", nullptr},
+        {"VB-CABLE + Hi-Fi Cable (gratuits)", {g8, hifi, vb}, false, L"Hi-Fi Cable Input", L"CABLE Input"},
+        {"Hi-Fi Cable seul", {g8, hifi}, false, nullptr, L"Hi-Fi Cable Input"},
+        {"A+B seul", {g8, a, b}, false, L"CABLE-B Input", L"CABLE-A Input"},
+        {"VB-CABLE + Voicemeeter", {g8, vb, vm}, false, nullptr, L"CABLE Input"},
+        {"Voicemeeter seul", {g8, vm}, false, nullptr, L"Voicemeeter Input"},
+        {"Aucun câble", {g8}, false, nullptr, nullptr},
+    };
+    std::string report;
+    int failures = 0;
+    for (const Case& c : cases) {
+        cables::Assignment r = cables::assign(c.outputs, -1, -1, c.singleForMusic);
+        auto got = [&](int i) { return i >= 0 ? c.outputs[size_t(i)] : std::wstring(L"(aucun)"); };
+        auto ok = [&](int i, const wchar_t* want) { return want ? i >= 0 && cables::startsWith(c.outputs[size_t(i)], want) : i < 0; };
+        bool good = ok(r.music, c.music) && ok(r.voice, c.voice);
+        report += std::string(c.name) + " : musique = " + narrow(got(r.music)) + ", voix = " + narrow(got(r.voice)) + "  " +
+                  (good ? "OK" : "ECHEC") + "\r\n";
+        if (!good) failures++;
+    }
+    report += failures == 0 ? "RESULTAT : OK\r\n" : "RESULTAT : " + std::to_string(failures) + " problème(s)\r\n";
+    if (FILE* f = _wfopen(reportPath.c_str(), L"wb")) {
+        fwrite(report.data(), 1, report.size(), f);
+        fclose(f);
+    }
+    return failures == 0 ? 0 : 1;
+}

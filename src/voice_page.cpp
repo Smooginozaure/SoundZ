@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "cables.h"
 #include "default_output.h"
 #include "sound_page.h"
 #include "ui.h"
@@ -70,6 +71,7 @@ struct Page {
     // Micro par défaut de Windows, remplacé par CABLE-A Output pendant le fonctionnement.
     bool switched = false;
     std::wstring cableCapture;
+    cables::Assignment cables;  // qui a quel câble virtuel (musique / voix)
     std::wstring lastMic;  // micro trouvé la dernière fois (si le micro par défaut devient le câble)
     std::wstring previous[3];
 };
@@ -217,7 +219,14 @@ void refreshDevices() {
         if (!isVirtualDevice(p.mics[size_t(i)].name)) p.mic = i;
     if (p.mic >= 0) p.lastMic = p.mics[size_t(p.mic)].endpoint;
 
-    p.cable = findDevice(p.outs, iniRead(kSection, L"cable"), {L"CABLE-A Input"});
+    // Le micro virtuel des applis : un câble que la musique n'utilise pas (voir cables.h).
+    {
+        std::vector<std::wstring> names;
+        for (const auto& o : p.outs) names.push_back(o.name);
+        p.cables = cables::assign(names, index(p.outs, iniRead(L"vocoder", L"sas")), index(p.outs, iniRead(kSection, L"cable")),
+                                  iniRead(L"appareils", L"cable_unique") == L"musique");
+        p.cable = p.cables.voice;
+    }
     // Retour casque : celui choisi, sinon là où l'on écoute (la sortie par défaut au lancement).
     p.headset = index(p.outs, iniRead(kSection, L"retour"));
     if (p.headset < 0) p.headset = index(p.outs, ui.listenOutput);
@@ -233,16 +242,32 @@ void refreshDevices() {
     setText(p.monitor, L"M'entendre dans le casque" + where);
 }
 
-// Micro virtuel vu par les applis : « CABLE-A Input » (sortie) devient « CABLE-A Output » (micro).
+// Micro virtuel vu par les applis : « CABLE-A Input » (sortie) devient « CABLE-A Output » (micro), de même pour
+// CABLE, Hi-Fi Cable… Voicemeeter, lui, renvoie son entrée virtuelle vers « Voicemeeter Out B1 » (B2, B3).
 std::wstring cableCaptureEndpoint() {
     if (p.cable < 0) return L"";
     std::wstring name = p.outs[size_t(p.cable)].name;
+    if (cables::startsWith(name, L"Voicemeeter")) {
+        const wchar_t* out = cables::startsWith(name, L"Voicemeeter AUX") ? L"Voicemeeter Out B2"
+                             : cables::startsWith(name, L"Voicemeeter VAIO3") ? L"Voicemeeter Out B3"
+                                                                               : L"Voicemeeter Out B1";
+        for (const auto& m : p.mics)
+            if (cables::startsWith(m.name, out)) return m.endpoint;
+        return L"";
+    }
     size_t at = name.find(L"Input");
     if (at == std::wstring::npos) return L"";
     name.replace(at, 5, L"Output");
     for (const auto& m : p.mics)
         if (sameText(m.name, name)) return m.endpoint;
     return L"";
+}
+
+// Nom du micro virtuel à choisir dans les applis (« CABLE-A Output »…).
+std::wstring cableCaptureName() {
+    for (const auto& m : p.mics)
+        if (!p.cableCapture.empty() && sameText(m.endpoint, p.cableCapture)) return m.name.substr(0, m.name.find(L" ("));
+    return L"le micro virtuel";
 }
 
 // ---------------------------------------------------------------- micro par défaut de Windows
@@ -269,7 +294,10 @@ void startVoice() {
     refreshDevices();
     if (p.mic < 0) { p.error = L"Aucun micro trouvé. Branche ton micro, puis clique sur Activer."; return; }
     if (p.cable < 0) {
-        p.error = L"CABLE-A introuvable : installe VB-CABLE A+B, redémarre, puis clique sur Activer.";
+        p.error = p.cables.count >= 1
+                      ? L"Le seul câble virtuel sert à la musique. Donne-le à la voix (⚙ → Appareils), ou installe un "
+                        L"2e câble (Hi-Fi Cable, gratuit)."
+                      : L"Aucun câble virtuel : installe VB-CABLE (gratuit, vb-audio.com/Cable), redémarre, puis clique sur Activer.";
         return;
     }
     const OutputDevice* headset = p.headset >= 0 ? &p.outs[size_t(p.headset)] : nullptr;
@@ -302,8 +330,9 @@ void updateUi() {
     if (!p.error.empty()) {
         text = p.error;
     } else if (running) {
-        text = L"● Actif — dans Discord, WhatsApp…, le micro est « CABLE-A Output » "
-               L"(il est déjà le micro par défaut de Windows).";
+        text = p.switched ? L"● Actif — dans Discord, WhatsApp…, le micro est « " + cableCaptureName() +
+                                L" » (il est déjà le micro par défaut de Windows)."
+                          : L"● Actif — dans Discord, WhatsApp…, choisis comme micro la sortie de ton câble virtuel.";
     } else {
         text = L"Voix désactivée — ton micro fonctionne normalement, sans effet.";
     }
@@ -340,7 +369,7 @@ void create() {
     p.status = makeControl(L"STATIC", L"", SS_LEFT);
     p.micLabel = makeControl(L"STATIC", L"Micro :", SS_LEFT);
     p.micCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_MIC);
-    p.cableLabel = makeControl(L"STATIC", L"Câble vers les applis (CABLE-A Input) :", SS_LEFT);
+    p.cableLabel = makeControl(L"STATIC", L"Câble vers les applis (le micro virtuel) :", SS_LEFT);
     p.cableCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_CABLE);
     p.headsetLabel = makeControl(L"STATIC", L"Retour casque :", SS_LEFT);
     p.headsetCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_HEADSET);
@@ -447,6 +476,8 @@ bool onCommand(WPARAM wp, LPARAM) {
                 if (p.engine.running()) startVoice();
                 else refreshDevices();
                 updateUi();
+                // Nouveau câble pour la voix : la musique doit en prendre un autre si c'était le sien.
+                if (id == IDC_CABLE) PostMessageW(ui.wnd, WM_APP_CABLES_CHANGED, 0, 0);
             }
         }
         return true;
@@ -547,7 +578,7 @@ std::wstring currentMicName() {
 
 void reloadDevices() {
     if (!p.engineReady) return;
-    if (p.engine.running()) startVoice();  // remet d'abord le micro par défaut d'origine, puis relit les choix
+    if (p.engine.running() || !p.error.empty()) startVoice();  // remet d'abord le micro par défaut d'origine, puis relit les choix
     else refreshDevices();
     updateUi();
 }

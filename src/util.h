@@ -36,10 +36,14 @@ inline bool sameText(const std::wstring& a, const std::wstring& b) {
 
 // Appareil virtuel (câbles VB-Audio, Voicemeeter, entrées virtuelles…) : ni un vrai casque, ni un vrai micro.
 // Aussi les entrées « tout ce que tu entends » des cartes son (What U Hear, Mixage stéréo) : pas des micros.
+// Liste précise : beaucoup de vrais casques s'appellent « … Virtual Surround » ou « Virtual 7.1 ».
 inline bool isVirtualDevice(const std::wstring& name) {
-    return contains(name, L"CABLE") || contains(name, L"VB-Audio") || contains(name, L"Voicemeeter") ||
-           contains(name, L"Virtual") || contains(name, L"What U Hear") || contains(name, L"Stereo Mix") ||
-           contains(name, L"Mixage stéréo");
+    const wchar_t* virtualNames[] = {L"CABLE",          L"VB-Audio",          L"Voicemeeter",   L"Virtual Audio Cable",
+                                     L"Virtual Audio Driver", L"Virtual Mic Driver", L"Steam Streaming", L"MOTIV Mix Virtual",
+                                     L"What U Hear",    L"Stereo Mix",        L"Mixage stéréo"};
+    for (const wchar_t* v : virtualNames)
+        if (contains(name, v)) return true;
+    return false;
 }
 
 // « Haut-parleurs (Sound Blaster G8 USB-1) » -> « Sound Blaster G8 USB-1 » : le nom du matériel, plus parlant.

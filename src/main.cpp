@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "cables.h"
 #include "default_output.h"
 #include "engine.h"
 #include "ui.h"
@@ -25,6 +26,7 @@ int runVoiceTest(const std::wstring& reportPath);                               
 int runSoundTest(const std::wstring& reportPath);
 int runClaudeTest(const std::wstring& reportPath, const std::wstring& name);  // selftest.cpp                                  // selftest.cpp
 int runShellTest(const std::wstring& reportPath);                                  // selftest.cpp
+int runCableTest(const std::wstring& reportPath);                                  // selftest.cpp
 
 Ui ui;
 
@@ -51,6 +53,7 @@ enum ControlId : int {
     IDC_DEV_OUT = 110,  // page « Appareils »
     IDC_DEV_MIC,
     IDC_DEV_BACK,
+    IDC_DEV_CABLE,  // un seul câble virtuel : voix ou musique
     IDC_DEV_OPEN,  // ouvre la page « Appareils » (comme ⚙ → Appareils… ; sert aussi aux tests)
     IDC_QUIT,      // quitte vraiment SoundZ (même si la croix réduit la fenêtre)
 };
@@ -78,6 +81,7 @@ struct PitchPage {
     PitchEngine engine;
     std::vector<OutputDevice> devices;
     int sasIndex = -1;
+    cables::Assignment cables;  // qui a quel câble virtuel (musique / voix)
     int outIndex = -1;
 
     std::wstring error;
@@ -93,6 +97,7 @@ struct DevicesPage {
     HWND title = nullptr, intro = nullptr;
     HWND outLabel = nullptr, outCombo = nullptr, outNow = nullptr;
     HWND micLabel = nullptr, micCombo = nullptr, micNow = nullptr;
+    HWND cableLabel = nullptr, cableCombo = nullptr, cableNow = nullptr;
     HWND back = nullptr;
     std::vector<std::wstring> outIds, micIds;  // identifiants des appareils de chaque liste ("" = automatique)
 };
@@ -195,7 +200,17 @@ int findListenOutput() {
 void refreshDevices() {
     g.devices = g.engine.outputs();
     g.outIndex = findListenOutput();
-    g.sasIndex = findDevice(iniRead(L"vocoder", L"sas"), {L"CABLE Input"}, g.outIndex);
+    // Le sas de la musique : un câble virtuel que la voix n'utilise pas (voir cables.h).
+    std::vector<std::wstring> names;
+    for (const auto& device : g.devices) names.push_back(device.name);
+    auto indexOf = [](const std::wstring& endpoint) {
+        for (int i = 0; i < int(g.devices.size()); ++i)
+            if (!endpoint.empty() && sameText(g.devices[size_t(i)].endpoint, endpoint)) return i;
+        return -1;
+    };
+    g.cables = cables::assign(names, indexOf(iniRead(L"vocoder", L"sas")), indexOf(iniRead(L"voix", L"cable")),
+                              iniRead(L"appareils", L"cable_unique") == L"musique");
+    g.sasIndex = g.cables.music;
     if (g.outIndex >= 0) {
         ui.listenOutput = g.devices[size_t(g.outIndex)].endpoint;
         ui.listenName = shortDeviceName(g.devices[size_t(g.outIndex)].name);
@@ -272,7 +287,10 @@ void startPitch() {
         return;
     }
     if (g.sasIndex < 0 || g.sasIndex == g.outIndex) {
-        g.error = L"VB-CABLE introuvable : installe-le (vb-audio.com/Cable), redémarre, puis clique sur Activer.";
+        g.error = g.cables.count >= 1
+                      ? L"Un seul câble virtuel, et il sert à ta voix. Pour transposer aussi la musique, installe un 2e câble "
+                        L"(Hi-Fi Cable, gratuit), ou donne-le à la musique : ⚙ → Appareils."
+                      : L"Aucun câble virtuel : installe VB-CABLE (gratuit, vb-audio.com/Cable), redémarre, puis clique sur Activer.";
         return;
     }
     const OutputDevice& sas = g.devices[size_t(g.sasIndex)];
@@ -438,7 +456,21 @@ void fillDevicesPage() {
     setText(d.outNow, L"En ce moment : " + (ui.listenName.empty() ? std::wstring(L"(aucune sortie)") : ui.listenName) +
                           L". La musique transposée, le retour de ta voix et les sons du soundboard sortent ici.");
     setText(d.micNow, L"En ce moment : " + voicepage::currentMicName() +
-                          L". C'est ce micro qui reçoit l'effet, puis part vers Discord, WhatsApp… par CABLE-A.");
+                          L". C'est ce micro qui reçoit l'effet, puis part vers Discord, WhatsApp… par le micro virtuel.");
+    // Les câbles virtuels : qui sert à quoi ; avec un seul câble, on choisit à quoi il sert.
+    const cables::Assignment& c = g.cables;
+    auto cableName = [](int i) { return i >= 0 ? g.devices[size_t(i)].name.substr(0, g.devices[size_t(i)].name.find(L" (")) : std::wstring(L"aucun"); };
+    SendMessageW(d.cableCombo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(d.cableCombo, CB_ADDSTRING, 0, LPARAM(L"Il sert à la voix et au soundboard (Discord…)"));
+    SendMessageW(d.cableCombo, CB_ADDSTRING, 0, LPARAM(L"Il sert à la musique (transposition)"));
+    SendMessageW(d.cableCombo, CB_SETCURSEL, c.singleToMusic ? 1 : 0, 0);
+    if (c.count == 0)
+        setText(d.cableNow, L"Aucun câble virtuel. Installe VB-CABLE (gratuit, vb-audio.com/Cable), puis redémarre : voir le guide.");
+    else if (c.count == 1)
+        setText(d.cableNow, L"Un seul câble virtuel (" + cableName(c.music >= 0 ? c.music : c.voice) +
+                                L"). Pour la musique ET la voix, ajoute un 2e câble gratuit : Hi-Fi Cable (voir le guide).");
+    else
+        setText(d.cableNow, L"Musique : " + cableName(c.music) + L"  ·  Voix et soundboard : " + cableName(c.voice));
 }
 
 // Un nouveau choix s'applique tout de suite : la musique et la voix repartent sur le bon appareil.
@@ -465,6 +497,20 @@ void onDeviceChosen(int id) {
     fillDevicesPage();
 }
 
+// Un seul câble virtuel : on le donne à la voix ou à la musique. Celui qui l'avait le rend d'abord.
+void onCableChosen() {
+    int sel = int(SendMessageW(d.cableCombo, CB_GETCURSEL, 0, 0));
+    iniWrite(L"appareils", L"cable_unique", sel == 1 ? L"musique" : L"voix");
+    bool musicActive = g.engine.running() || !g.error.empty();
+    stopPitch();
+    voicepage::reloadDevices();
+    refreshDevices();
+    if (musicActive || sel == 1) startPitch();
+    updateUi();
+    fillDevicesPage();
+    PostMessageW(ui.wnd, voicepage::WM_APP_RELAYOUT, 0, 0);  // la liste du câble unique apparaît ou disparaît
+}
+
 int layoutDevices(int top, bool shown) {
     const int margin = 20, inner = kWidth - 2 * margin;
     int y = top + 6;
@@ -484,9 +530,19 @@ int layoutDevices(int top, bool shown) {
     y += 34;
     place(d.micNow, margin, y, inner, 36, ui.smallFont);
     y += 50;
+    place(d.cableLabel, margin, y, inner, 20, ui.smallFont);
+    y += 22;
+    const bool single = g.cables.count == 1;
+    if (single) {
+        place(d.cableCombo, margin, y, inner, 300, ui.font);
+        y += 34;
+    }
+    place(d.cableNow, margin, y, inner, 36, ui.smallFont);
+    y += 50;
+    ShowWindow(d.cableCombo, shown && single ? SW_SHOW : SW_HIDE);
     place(d.back, margin, y, 150, 32, ui.font);
     y += 44;
-    for (HWND h : {d.title, d.intro, d.outLabel, d.outCombo, d.outNow, d.micLabel, d.micCombo, d.micNow, d.back})
+    for (HWND h : {d.title, d.intro, d.outLabel, d.outCombo, d.outNow, d.micLabel, d.micCombo, d.micNow, d.cableLabel, d.cableNow, d.back})
         ShowWindow(h, shown ? SW_SHOW : SW_HIDE);
     return y;
 }
@@ -501,6 +557,10 @@ void createDevicesPage() {
     d.micLabel = makeControl(L"STATIC", L"Micro", SS_LEFT);
     d.micCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_DEV_MIC);
     d.micNow = makeControl(L"STATIC", L"", SS_LEFT);
+    d.cableLabel = makeControl(L"STATIC", L"Câbles virtuels", SS_LEFT);
+    d.cableCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_DEV_CABLE);
+    d.cableNow = makeControl(L"STATIC", L"", SS_LEFT);
+    theme::darkControl(d.cableCombo);
     d.back = theme::button(L"← Retour", theme::Kind::kButton, IDC_DEV_BACK);
     theme::darkControl(d.outCombo);
     theme::darkControl(d.micCombo);
@@ -617,7 +677,7 @@ void createControls() {
     g.toggle = theme::button(L"Désactiver", theme::Kind::kButton, IDC_TOGGLE);
     g.status = makeControl(L"STATIC", L"", SS_LEFT);
     g.settings = theme::button(L"Réglages", theme::Kind::kButton, IDC_SETTINGS);
-    g.sasLabel = makeControl(L"STATIC", L"Sas (sortie que personne n'écoute : CABLE Input) :", SS_LEFT);
+    g.sasLabel = makeControl(L"STATIC", L"Sas de la musique (câble virtuel que personne n'écoute) :", SS_LEFT);
     g.sasCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_SAS);
     g.outLabel = makeControl(L"STATIC", L"Sortie (là où tu écoutes) :", SS_LEFT);
     g.outCombo = makeControl(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, IDC_OUT);
@@ -636,6 +696,7 @@ void onComboChanged(int id) {
     (id == IDC_SAS ? g.sasIndex : g.outIndex) = index;
     iniWrite(L"vocoder", id == IDC_SAS ? L"sas" : L"sortie", g.devices[size_t(index)].endpoint);
     if (g.engine.running() || !g.error.empty()) startPitch();
+    if (id == IDC_SAS) voicepage::reloadDevices();  // la voix ne doit pas garder le câble que la musique vient de prendre
     updateUi();
 }
 
@@ -742,6 +803,9 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_DEV_MIC:
             if (HIWORD(wp) == CBN_SELCHANGE) onDeviceChosen(LOWORD(wp));
             return 0;
+        case IDC_DEV_CABLE:
+            if (HIWORD(wp) == CBN_SELCHANGE) onCableChosen();
+            return 0;
         case IDC_DEV_BACK:
             showPage(g_lastTab);
             return 0;
@@ -798,6 +862,17 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         layout();
         return 0;
 
+    case voicepage::WM_APP_CABLES_CHANGED:  // la voix a changé de câble : la musique prend un câble encore libre
+        if (g.engine.running() || !g.error.empty()) {
+            stopPitch();
+            refreshDevices();
+            startPitch();
+        } else {
+            refreshDevices();
+        }
+        updateUi();
+        return 0;
+
     case WM_CTLCOLORSTATIC: {
         HWND control = reinterpret_cast<HWND>(lp);
         COLORREF text = theme::kText;
@@ -806,8 +881,8 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         else if (voicepage::isStatus(control, voiceError) || soundpage::isStatus(control, voiceError))
             text = voiceError ? theme::kDanger : theme::kMuted;
         else if (control == g.sasLabel || control == g.outLabel) text = theme::kText2;
-        else if (control == d.intro || control == d.outNow || control == d.micNow) text = theme::kMuted;
-        else if (control == d.outLabel || control == d.micLabel) text = theme::kText2;
+        else if (control == d.intro || control == d.outNow || control == d.micNow || control == d.cableNow) text = theme::kMuted;
+        else if (control == d.outLabel || control == d.micLabel || control == d.cableLabel) text = theme::kText2;
         else
             for (HWND tick : g.ticks)
                 if (control == tick) text = theme::kFaint;
@@ -868,6 +943,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (argc >= 4 && std::wstring(argv[1]) == L"--claudetest") return runClaudeTest(argv[2], argv[3]);
     if (argc >= 3 && std::wstring(argv[1]) == L"--shelltest") return runShellTest(argv[2]);
     if (argc >= 3 && std::wstring(argv[1]) == L"--devicetest") return runDeviceTest(argv[2]);
+    if (argc >= 3 && std::wstring(argv[1]) == L"--cabletest") return runCableTest(argv[2]);
 
     // Une seule instance : si le programme tourne déjà, on ramène sa fenêtre.
     CreateMutexW(nullptr, TRUE, L"Local\\SoundZ.SingleInstance");

@@ -265,6 +265,9 @@ WORD freeHotkey() {
 
 // ---------------------------------------------------------------- lecture
 
+// Numéro d'un son pour le mélangeur (0 à 59) : 62 et 63 servent au bip et à « Écouter », jamais à un bouton.
+int soundTag(const Sound& s) { return s.uid % 60; }
+
 Sound* findUid(int uid) {
     for (Sound& s : p.sounds)
         if (s.uid == uid) return &s;
@@ -344,8 +347,8 @@ void playSound(const Sound& s) {
     if (!s.samples || s.samples->empty()) return;
     float gain = float(s.volume) / 100.0f;
     int length = int(s.samples->size());
-    if (voicepage::running()) g_cable.play(s.samples->data(), length, gain, s.uid & 63);
-    if (hearMyself() && openPlayer()) g_local.play(s.samples->data(), length, gain, s.uid & 63);
+    if (voicepage::running()) g_cable.play(s.samples->data(), length, gain, soundTag(s));
+    if (hearMyself() && openPlayer()) g_local.play(s.samples->data(), length, gain, soundTag(s));
 }
 
 void stopAllSounds() {
@@ -1107,7 +1110,7 @@ void updateStatus() {
     } else if (!voicepage::running()) {
         t = L"La voix est désactivée (onglet Voix) : les sons ne partent pas dans ton micro, toi seul les entends.";
     } else {
-        t = L"● Les sons partent dans ton micro (CABLE-A Output) : sur Discord, tes amis les entendent.";
+        t = L"● Les sons partent dans ton micro virtuel, avec ta voix : sur Discord, tes amis les entendent.";
     }
     setText(p.status, t);
     InvalidateRect(p.status, nullptr, TRUE);
@@ -1180,7 +1183,7 @@ void drawTile(const DRAWITEMSTRUCT* d) {
         SelectObject(dc, old);
     } else {
         Sound& s = p.sounds[size_t(int(d->CtlID) - IDC_TILE0)];
-        bool playing = (p.lastPlaying >> (s.uid & 63)) & 1;
+        bool playing = (p.lastPlaying >> (soundTag(s))) & 1;
         COLORREF fill = playing ? theme::kAccentSoft : pressed ? theme::kSurfacePressed : hover ? theme::kSurfaceHover : theme::kSurface;
         roundBox(dc, box, fill, focused ? theme::kAccentLight : theme::kAccentBright, playing || focused ? 1.5f : 0.0f);
         refreshBitmap(s, false);
@@ -1637,7 +1640,7 @@ void onTimer() {
         uint64_t changed = playing ^ p.lastPlaying;
         p.lastPlaying = playing;
         for (int i = 0; i < int(p.sounds.size()); ++i)
-            if ((changed >> (p.sounds[size_t(i)].uid & 63)) & 1) InvalidateRect(p.tiles[i], nullptr, FALSE);
+            if ((changed >> (soundTag(p.sounds[size_t(i)]))) & 1) InvalidateRect(p.tiles[i], nullptr, FALSE);
     }
     bool voice = voicepage::running();
     if (voice != p.lastVoice) {

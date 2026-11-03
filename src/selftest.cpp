@@ -151,6 +151,15 @@ std::vector<float> transpose(const std::vector<float>& mono, int semitones) {
 }  // namespace
 
 int runSelfTest(const std::wstring& reportPath) {
+    if (FindWindowW(L"SoundZWindow", nullptr) || FindWindowW(L"VocoderPitchWindow", nullptr)) {
+        // SoundZ est ouvert : CABLE Input est alors le sas de la musique, le son de test sortirait dans le casque.
+        const char text[] = "ECHEC : ferme SoundZ avant ce test (le son de test sortirait dans ton casque)\r\n";
+        if (FILE* f = _wfopen(reportPath.c_str(), L"wb")) {
+            fwrite(text, 1, sizeof(text) - 1, f);
+            fclose(f);
+        }
+        return 1;
+    }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     std::string report;
     auto line = [&](const std::string& s) { report += s + "\r\n"; };
@@ -274,6 +283,15 @@ int runSelfTest(const std::wstring& reportPath) {
 // Test du moteur en temps réel, sans rien jouer d'audible :
 // la 440 Hz joué sur le sas (VB-CABLE) -> moteur -> une sortie muette choisie (3e argument), écoutée en loopback.
 int runEngineTest(const std::wstring& reportPath, const std::wstring& testOutput) {
+    if (FindWindowW(L"SoundZWindow", nullptr) || FindWindowW(L"VocoderPitchWindow", nullptr)) {
+        // SoundZ est ouvert : CABLE Input est alors le sas de la musique, le son de test sortirait dans le casque.
+        const char text[] = "ECHEC : ferme SoundZ avant ce test (le son de test sortirait dans ton casque)\r\n";
+        if (FILE* f = _wfopen(reportPath.c_str(), L"wb")) {
+            fwrite(text, 1, sizeof(text) - 1, f);
+            fclose(f);
+        }
+        return 1;
+    }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     std::string report;
     auto line = [&](const std::string& s) { report += s + "\r\n"; };

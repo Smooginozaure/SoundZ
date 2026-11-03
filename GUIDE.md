@@ -16,7 +16,7 @@ SoundZ est un petit utilitaire Windows, en un seul fichier, avec trois onglets :
 
 | | Étape |
 |:-:|---|
-| **1** | Installe les deux câbles audio virtuels de VB-Audio, depuis **[vb-audio.com/Cable](https://vb-audio.com/Cable/)** : **VB-CABLE** (gratuit) pour la musique, et **VB-CABLE A+B** (en donation) pour la voix. Redémarre ensuite le PC. |
+| **1** | Installe **[VB-CABLE](https://vb-audio.com/Cable/)** (gratuit) : il suffit pour la voix et le soundboard. Pour transposer aussi la musique, ajoute un 2e câble : **Hi-Fi Cable** (gratuit) ou **VB-CABLE A+B** (sur don). Toutes les solutions, pas à pas : **[CABLES.md](https://github.com/Smooginozaure/SoundZ/blob/main/CABLES.md)**. Redémarre ensuite le PC. |
 | **2** | ⚠️ À l'installation, chaque câble se met tout seul en sortie et en micro par défaut. Dans les **paramètres Son** de Windows, remets ton casque (ou tes enceintes) en sortie et ton micro en entrée. |
 | **3** | Décompresse l'archive de SoundZ dans un dossier à toi, par exemple `C:\Outils\SoundZ`. |
 | **4** | Lance **`SoundZ.exe`**. Si Windows affiche « Windows a protégé votre ordinateur », clique sur **Informations complémentaires**, puis **Exécuter quand même**. |
@@ -58,11 +58,11 @@ SoundZ est un petit utilitaire Windows, en un seul fichier, avec trois onglets :
 | Périphérique de sortie | Ton casque |
 | Suppression du bruit | **Aucune**, sinon Discord coupe les sons du soundboard |
 
-Pour les autres applis : choisis le micro **« Par défaut »**, ou **« CABLE-A Output »**.
+Pour les autres applis : choisis le micro **« Par défaut »**, ou la sortie de ton câble (**« CABLE-A Output »**, **« CABLE Output »**…). L'onglet Voix affiche lequel.
 
 ## 5. Le menu ⚙
 
-- **Appareils…** : choisis la sortie et le micro, en **Automatique** (appareils par défaut de Windows) ou un appareil précis.
+- **Appareils…** : choisis la sortie et le micro, en **Automatique** (appareils par défaut de Windows) ou un appareil précis. Tu y vois aussi quel câble virtuel sert à quoi, et avec un seul câble, s'il va à la voix ou à la musique.
 - **Raccourci dans le menu Démarrer**, **Icône sur le Bureau**, **Lancer SoundZ avec Windows**.
 - **Réduire au lieu de fermer** : la croix réduit SoundZ au lieu de le fermer. **Quitter SoundZ** ferme pour de bon.
 
@@ -72,7 +72,7 @@ Pour les autres applis : choisis le micro **« Par défaut »**, ou **« CABLE-A
 |---|---|
 | Plus de son sur le PC | Paramètres Son de Windows → choisis ton casque ou tes enceintes en sortie. |
 | Le micro ne marche plus dans une appli | Paramètres Son → remets ton vrai micro en entrée, ou choisis « Par défaut » dans l'appli. |
-| « VB-CABLE introuvable » ou « CABLE-A introuvable » | Installe le câble qui manque (étape 1), puis redémarre. |
+| « Aucun câble virtuel » ou « Un seul câble virtuel » | Installe un câble (étape 1, ou [toutes les solutions](https://github.com/Smooginozaure/SoundZ/blob/main/CABLES.md)), puis redémarre. Avec un seul câble, choisis à quoi il sert : ⚙ → Appareils. |
 | Mauvais casque ou mauvais micro | ⚙ → **Appareils…** → choisis le bon. |
 | Les amis n'entendent pas les sons | Onglet Voix : la voix doit être active. Dans Discord : suppression du bruit sur « Aucune ». |
 

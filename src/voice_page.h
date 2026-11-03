@@ -12,6 +12,7 @@ namespace voicepage {
 
 constexpr UINT WM_APP_VOICE_LOST = WM_APP + 2;
 constexpr UINT WM_APP_RELAYOUT = WM_APP + 3;  // la page demande à la fenêtre de se réorganiser
+constexpr UINT WM_APP_CABLES_CHANGED = WM_APP + 5;  // le câble de la voix a changé : la musique revoit le sien
 
 void create();                    // crée les contrôles (cachés)
 int layout(int top, bool shown);  // place les contrôles ; renvoie le bas de la page (en DIP)
