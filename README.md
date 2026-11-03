@@ -31,7 +31,7 @@ Comme le soundboard de Discord, mais avec **n'importe quel son entendu sur ton P
 
 ### ⚙️ Et aussi
 - **Aucun réglage obligatoire.** SoundZ prend ton casque et ton micro habituels, met les câbles virtuels par défaut le temps de fonctionner, puis **remet tout comme avant** à la fermeture.
-- Le menu ⚙ propose un **choix des appareils** (automatique ou précis), un **raccourci** dans le menu Démarrer et sur le Bureau, le **lancement avec Windows**, et l'option « **réduire au lieu de fermer** ».
+- Le menu ⚙ propose un **choix des appareils** (automatique ou précis), un **raccourci** dans le menu Démarrer et sur le Bureau, le **lancement avec Windows**, l'option « **réduire au lieu de fermer** », et la **réduction dans la zone de notification** (une petite icône près de l'horloge, au lieu de la barre des tâches).
 - **Thème sombre et sobre**, teinte bleu-gris « Orage ».
 - Le bouton **🪳**, à côté de ⚙, sert à **signaler un bug** ou **proposer une fonctionnalité** : il ouvre un ticket GitHub déjà rempli avec les informations utiles. Il faut un compte GitHub (gratuit).
 

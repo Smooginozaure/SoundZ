@@ -16,6 +16,9 @@ bool set(Item item, bool on);  // false si Windows a refusé
 // sont mis à jour vers le nouvel emplacement.
 void refresh();
 
+// Fichier du raccourci (menu Démarrer, Bureau, dossier Démarrage), pour le test --shelltest.
+std::wstring shortcutFile(Item item);
+
 // Lancé par Windows à l'ouverture de session (argument ajouté au lancement automatique).
 constexpr wchar_t kStartupArgument[] = L"--demarrage";
 

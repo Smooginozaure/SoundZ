@@ -70,6 +70,90 @@ bool g_quitting = false;         // « Quitter SoundZ » : la fermeture n'est pl
 // Option « Réduire au lieu de fermer » : la croix réduit SoundZ dans la barre des tâches (tout continue).
 bool minimizeOnClose() { return iniReadInt(L"fenetre", L"reduire", 0) != 0; }
 
+// ---------------------------------------------------------------- zone de notification (près de l'horloge)
+
+// Option « Réduire dans la zone de notification » : réduit, SoundZ quitte la barre des tâches et reste en icône
+// près de l'horloge. Clic : la fenêtre revient ; clic droit : Ouvrir, Quitter.
+constexpr UINT WM_APP_TRAY = WM_APP + 6;
+UINT g_taskbarCreated = 0;  // message de Windows quand la barre des tâches redémarre (l'icône est à remettre)
+HICON g_trayIcon = nullptr;
+bool g_trayAdded = false;
+
+bool trayEnabled() { return iniReadInt(L"fenetre", L"zone_notification", 0) != 0; }
+
+NOTIFYICONDATAW trayData() {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = ui.wnd;
+    nid.uID = 1;
+    return nid;
+}
+
+void trayAdd() {
+    if (g_trayAdded) return;
+    NOTIFYICONDATAW nid = trayData();
+    nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP;
+    nid.uCallbackMessage = WM_APP_TRAY;
+    nid.hIcon = g_trayIcon;
+    wcscpy_s(nid.szTip, L"SoundZ");
+    if (!Shell_NotifyIconW(NIM_ADD, &nid)) return;
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    g_trayAdded = true;
+}
+
+void trayRemove() {
+    if (!g_trayAdded) return;
+    NOTIFYICONDATAW nid = trayData();
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    g_trayAdded = false;
+}
+
+// La première fois seulement : une petite bulle explique où est passé SoundZ.
+void trayHintOnce() {
+    if (iniReadInt(L"fenetre", L"bulle_zone_notification", 0)) return;
+    iniWrite(L"fenetre", L"bulle_zone_notification", L"1");
+    NOTIFYICONDATAW nid = trayData();
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_USER | NIIF_NOSOUND;
+    wcscpy_s(nid.szInfoTitle, L"SoundZ continue de tourner");
+    wcscpy_s(nid.szInfo, L"La musique, la voix et le soundboard restent actifs. Clique sur cette icône pour rouvrir SoundZ.");
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+void hideToTray() {
+    trayAdd();
+    if (!g_trayAdded) return;  // pas d'icône possible : on reste dans la barre des tâches
+    ShowWindow(ui.wnd, SW_HIDE);
+    trayHintOnce();
+}
+
+void restoreFromTray() {
+    ShowWindow(ui.wnd, SW_SHOW);
+    ShowWindow(ui.wnd, SW_RESTORE);
+    SetForegroundWindow(ui.wnd);
+    SetTimer(ui.wnd, kTaskbarTimer, 1500, nullptr);  // bouton de la barre des tâches à sa vraie largeur
+    SetTimer(ui.wnd, kTaskbarTimer2, 5000, nullptr);
+}
+
+void showTrayMenu(int x, int y) {
+    enum { kOpen = 1, kQuitFromTray };
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, kOpen, L"Ouvrir SoundZ");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kQuitFromTray, L"Quitter SoundZ");
+    SetMenuDefaultItem(menu, kOpen, FALSE);
+    SetForegroundWindow(ui.wnd);  // sans ça, le menu ne se referme pas en cliquant ailleurs
+    int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, x, y, 0, ui.wnd, nullptr);
+    PostMessageW(ui.wnd, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+    if (choice == kOpen) restoreFromTray();
+    if (choice == kQuitFromTray) {
+        g_quitting = true;
+        PostMessageW(ui.wnd, WM_CLOSE, 0, 0);
+    }
+}
+
 struct PitchPage {
     HWND label = nullptr;
     HWND slider = nullptr;
@@ -119,7 +203,7 @@ void showPage(int page);
 
 // Menu ⚙ : appareils, raccourcis et lancement avec Windows (cochés selon ce qui existe déjà).
 void showOptions() {
-    enum { kStartMenu = 1, kDesktop, kAutostart, kFolder, kDevices, kMinimize, kQuit };
+    enum { kStartMenu = 1, kDesktop, kAutostart, kFolder, kDevices, kMinimize, kQuit, kTray };
     const struct { int id; shellint::Item item; const wchar_t* text; } items[] = {
         {kStartMenu, shellint::Item::kStartMenu, L"Raccourci dans le menu Démarrer"},
         {kDesktop, shellint::Item::kDesktop, L"Icône sur le Bureau"},
@@ -132,6 +216,7 @@ void showOptions() {
         AppendMenuW(menu, MF_STRING | (shellint::enabled(it.item) ? MF_CHECKED : 0), it.id, it.text);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (minimizeOnClose() ? MF_CHECKED : 0), kMinimize, L"Réduire au lieu de fermer");
+    AppendMenuW(menu, MF_STRING | (trayEnabled() ? MF_CHECKED : 0), kTray, L"Réduire dans la zone de notification");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kFolder, L"Ouvrir le dossier de SoundZ");
     AppendMenuW(menu, MF_STRING, kQuit, L"Quitter SoundZ");
@@ -146,6 +231,12 @@ void showOptions() {
     }
     if (choice == kDevices) showPage(kDevicesPage);
     if (choice == kMinimize) iniWrite(L"fenetre", L"reduire", minimizeOnClose() ? L"0" : L"1");
+    if (choice == kTray) {
+        const bool on = !trayEnabled();
+        iniWrite(L"fenetre", L"zone_notification", on ? L"1" : L"0");
+        if (on) trayAdd();
+        else trayRemove();
+    }
     if (choice == kQuit) {
         g_quitting = true;
         PostMessageW(ui.wnd, WM_CLOSE, 0, 0);
@@ -713,6 +804,7 @@ void createTooltips() {
 // Windows calcule parfois mal, au lancement, la largeur du bouton de SoundZ dans la barre des tâches (44 px :
 // l'icône seule, le nom coupé). On lui fait refaire ce bouton une fois la fenêtre affichée.
 void refreshTaskbarButton() {
+    if (!IsWindowVisible(ui.wnd)) return;  // dans la zone de notification : pas de bouton dans la barre des tâches
     ITaskbarList* taskbar = nullptr;
     if (FAILED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&taskbar)))) return;
     if (SUCCEEDED(taskbar->HrInit())) {
@@ -911,6 +1003,11 @@ void shutdownAll() {
 }
 
 LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g_taskbarCreated && msg == g_taskbarCreated) {  // la barre des tâches a redémarré : on remet l'icône
+        g_trayAdded = false;
+        if (trayEnabled()) trayAdd();
+        return 0;
+    }
     switch (msg) {
     case WM_HSCROLL:
         if (reinterpret_cast<HWND>(lp) == g.slider) applySemitones(sliderPos(g.slider));
@@ -1075,10 +1172,28 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED && trayEnabled()) hideToTray();  // réduit : direction la zone de notification
+        return 0;
+
+    case WM_APP_TRAY:
+        switch (LOWORD(lp)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+        case WM_LBUTTONDBLCLK:
+            restoreFromTray();
+            break;
+        case WM_CONTEXTMENU:
+            showTrayMenu(GET_X_LPARAM(wp), GET_Y_LPARAM(wp));
+            break;
+        }
+        return 0;
+
     case WM_QUERYENDSESSION:
         return TRUE;
 
     case WM_ENDSESSION:
+        if (wp) trayRemove();
         if (wp) shutdownAll();  // extinction / déconnexion : on rend la sortie et le micro à Windows
         return 0;
 
@@ -1094,6 +1209,7 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESTROY:
+        trayRemove();
         KillTimer(wnd, kStatusTimer);
         KillTimer(wnd, kVolumeTimer);
         KillTimer(wnd, kVoiceTimer);
@@ -1123,6 +1239,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     CreateMutexW(nullptr, TRUE, L"Local\\SoundZ.SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         if (HWND existing = FindWindowW(kClassName, nullptr)) {
+            ShowWindow(existing, SW_SHOW);  // même s'il est caché dans la zone de notification
             ShowWindow(existing, SW_RESTORE);
             SetForegroundWindow(existing);
         }
@@ -1166,6 +1283,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ui.wnd = CreateWindowExW(0, kClassName, kTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, 400, 300, nullptr, nullptr, instance, nullptr);
     ui.dpi = GetDpiForWindow(ui.wnd);
+    g_trayIcon = wc.hIconSm;
+    g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    if (trayEnabled()) trayAdd();
     theme::decorateWindow(ui.wnd);
     createControls();
     g_page = std::clamp(iniReadInt(L"fenetre", L"onglet", 0), 0, 2);
@@ -1193,7 +1313,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     // Lancé avec Windows : SoundZ démarre réduit dans la barre des tâches (tout tourne déjà).
     bool atStartup = false;
     for (int i = 1; i < argc; ++i) atStartup = atStartup || std::wstring(argv[i]) == shellint::kStartupArgument;
-    ShowWindow(ui.wnd, atStartup ? SW_SHOWMINNOACTIVE : show);
+    // Lancé avec Windows et option « zone de notification » : directement l'icône près de l'horloge.
+    if (!(atStartup && trayEnabled() && g_trayAdded)) ShowWindow(ui.wnd, atStartup ? SW_SHOWMINNOACTIVE : show);
     SetTimer(ui.wnd, kTaskbarTimer, 1500, nullptr);
     SetTimer(ui.wnd, kTaskbarTimer2, 5000, nullptr);
     UpdateWindow(ui.wnd);

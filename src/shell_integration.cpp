@@ -9,6 +9,9 @@
 namespace shellint {
 namespace {
 
+// Ancienne façon de lancer SoundZ avec Windows (clé « Run » du registre), remplacée par un raccourci dans le
+// dossier Démarrage : plus visible pour l'utilisateur, et que les antivirus ne confondent pas avec un logiciel
+// malveillant qui s'installe en douce.
 const wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t kRunValue[] = L"SoundZ";
 
@@ -29,7 +32,8 @@ std::wstring knownFolder(REFKNOWNFOLDERID id) {
 }
 
 std::wstring shortcutPath(Item item) {
-    std::wstring folder = knownFolder(item == Item::kStartMenu ? FOLDERID_Programs : FOLDERID_Desktop);
+    REFKNOWNFOLDERID id = item == Item::kStartMenu ? FOLDERID_Programs : item == Item::kDesktop ? FOLDERID_Desktop : FOLDERID_Startup;
+    std::wstring folder = knownFolder(id);
     return folder.empty() ? L"" : folder + L"\\SoundZ.lnk";
 }
 
@@ -52,12 +56,13 @@ std::wstring shortcutTarget(const std::wstring& path) {
     return target;
 }
 
-bool writeShortcut(const std::wstring& path) {
+bool writeShortcut(const std::wstring& path, const wchar_t* arguments = nullptr) {
     const std::wstring exe = exePath();
     bool ok = false;
     IShellLinkW* link = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
         link->SetPath(exe.c_str());
+        if (arguments) link->SetArguments(arguments);
         link->SetWorkingDirectory(folderOf(exe).c_str());
         link->SetDescription(L"SoundZ : musique transposée, voix (autotune, vocodeur) et soundboard");
         link->SetIconLocation(exe.c_str(), 0);
@@ -72,60 +77,74 @@ bool writeShortcut(const std::wstring& path) {
     return ok;
 }
 
-std::wstring autostartCommand() { return L"\"" + exePath() + L"\" " + kStartupArgument; }
-
-std::wstring readAutostart() {
-    wchar_t buffer[1024] = {};
-    DWORD size = sizeof(buffer);
-    if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, buffer, &size) != ERROR_SUCCESS) return L"";
-    return buffer;
-}
-
-bool writeAutostart(bool on) {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return false;
-    LSTATUS status;
-    if (on) {
-        std::wstring command = autostartCommand();
-        status = RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(command.c_str()),
-                                DWORD((command.size() + 1) * sizeof(wchar_t)));
-    } else {
-        status = RegDeleteValueW(key, kRunValue);
-        if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
-    }
-    RegCloseKey(key);
-    return status == ERROR_SUCCESS;
-}
-
-}  // namespace
-
-bool enabled(Item item) {
-    if (item == Item::kAutostart) return !readAutostart().empty();
-    return exists(shortcutPath(item));
-}
-
-bool set(Item item, bool on) {
-    if (item == Item::kAutostart) return writeAutostart(on);
-    const std::wstring path = shortcutPath(item);
-    if (path.empty()) return false;
-    if (on) return writeShortcut(path);
+bool removeShortcut(const std::wstring& path) {
     if (!exists(path)) return true;
     bool ok = DeleteFileW(path.c_str()) != 0;
     if (ok) SHChangeNotify(SHCNE_DELETE, SHCNF_PATHW, path.c_str(), nullptr);
     return ok;
 }
 
+std::wstring readLegacyAutostart() {
+    wchar_t buffer[1024] = {};
+    DWORD size = sizeof(buffer);
+    if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, buffer, &size) != ERROR_SUCCESS) return L"";
+    return buffer;
+}
+
+void removeLegacyAutostart() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
+    RegDeleteValueW(key, kRunValue);
+    RegCloseKey(key);
+}
+
+// « "C:\…\SoundZ.exe" --demarrage » -> « C:\…\SoundZ.exe ».
+std::wstring commandExe(const std::wstring& command) {
+    if (!command.empty() && command[0] == L'"') {
+        size_t end = command.find(L'"', 1);
+        return end == std::wstring::npos ? command.substr(1) : command.substr(1, end - 1);
+    }
+    return command.substr(0, command.find(L' '));
+}
+
+}  // namespace
+
+std::wstring shortcutFile(Item item) { return shortcutPath(item); }
+
+bool enabled(Item item) {
+    if (item == Item::kAutostart) return exists(shortcutPath(item)) || !readLegacyAutostart().empty();
+    return exists(shortcutPath(item));
+}
+
+bool set(Item item, bool on) {
+    const std::wstring path = shortcutPath(item);
+    if (path.empty()) return false;
+    if (item == Item::kAutostart) removeLegacyAutostart();
+    if (on) return writeShortcut(path, item == Item::kAutostart ? kStartupArgument : nullptr);
+    return removeShortcut(path);
+}
+
+// Au lancement. On ne touche à un raccourci que s'il vise un SoundZ.exe qui n'existe plus (le dossier de SoundZ a
+// été déplacé). S'il vise un autre SoundZ.exe qui existe encore (une autre copie), on n'y touche pas : une copie
+// lancée d'ailleurs, même pour un essai, ne doit jamais détourner les raccourcis de la vraie.
 void refresh() {
     const std::wstring exe = exePath();
-    for (Item item : {Item::kStartMenu, Item::kDesktop}) {
+    for (Item item : {Item::kStartMenu, Item::kDesktop, Item::kAutostart}) {
         const std::wstring path = shortcutPath(item);
         if (!exists(path)) continue;
-        // Seulement nos raccourcis : ceux qui visent un SoundZ.exe (ailleurs : l'ancien emplacement).
         std::wstring target = shortcutTarget(path);
-        if (!target.empty() && !sameText(target, exe) && contains(lower(target), L"soundz.exe")) writeShortcut(path);
+        if (!target.empty() && !sameText(target, exe) && contains(lower(target), L"soundz.exe") && !exists(target))
+            writeShortcut(path, item == Item::kAutostart ? kStartupArgument : nullptr);
     }
-    std::wstring command = readAutostart();
-    if (!command.empty() && !sameText(command, autostartCommand())) writeAutostart(true);
+    // Ancien lancement automatique (registre) : remplacé par le raccourci du dossier Démarrage, s'il visait cet
+    // exe-ci ou un exe disparu.
+    std::wstring legacy = readLegacyAutostart();
+    if (!legacy.empty()) {
+        std::wstring target = commandExe(legacy);
+        if (sameText(target, exe) || !exists(target)) {
+            if (writeShortcut(shortcutPath(Item::kAutostart), kStartupArgument)) removeLegacyAutostart();
+        }
+    }
 }
 
 }  // namespace shellint

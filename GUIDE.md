@@ -65,6 +65,7 @@ Pour les autres applis : choisis le micro **« Par défaut »**, ou la sortie de
 - **Appareils…** : choisis la sortie et le micro, en **Automatique** (appareils par défaut de Windows) ou un appareil précis. Tu y vois aussi quel câble virtuel sert à quoi, et avec un seul câble, s'il va à la voix ou à la musique.
 - **Raccourci dans le menu Démarrer**, **Icône sur le Bureau**, **Lancer SoundZ avec Windows**.
 - **Réduire au lieu de fermer** : la croix réduit SoundZ au lieu de le fermer. **Quitter SoundZ** ferme pour de bon.
+- **Réduire dans la zone de notification** : réduit, SoundZ quitte la barre des tâches et devient une petite icône « SZ » près de l'horloge. **Clic** sur l'icône : la fenêtre revient. **Clic droit** : Ouvrir ou Quitter. Avec « Lancer SoundZ avec Windows », il y démarre directement.
 
 ## 6. En cas de problème
 

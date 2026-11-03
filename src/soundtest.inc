@@ -405,11 +405,33 @@ int runShellTest(const std::wstring& reportPath) {
         {shellint::Item::kDesktop, "Icône du Bureau"},
         {shellint::Item::kAutostart, "Lancement avec Windows"},
     };
+    // On garde une copie exacte des raccourcis existants (et de l'ancienne clé « Run ») pour les remettre tels quels :
+    // les recréer viserait l'exe du test, pas celui de l'utilisateur.
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const wchar_t* runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    wchar_t runValue[1024] = {};
+    DWORD runSize = sizeof(runValue);
+    const bool hadRun = RegGetValueW(HKEY_CURRENT_USER, runKey, L"SoundZ", RRF_RT_REG_SZ, nullptr, runValue, &runSize) == ERROR_SUCCESS;
     for (const auto& it : items) {
+        const std::wstring file = shellint::shortcutFile(it.item);
+        const std::wstring backup = std::wstring(temp) + L"soundz-shelltest-" + std::to_wstring(int(it.item)) + L".lnk";
+        const bool hadFile = GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES;
+        if (hadFile) CopyFileW(file.c_str(), backup.c_str(), FALSE);
         const bool before = shellint::enabled(it.item);
         bool on = shellint::set(it.item, true) && shellint::enabled(it.item);
         bool off = shellint::set(it.item, false) && !shellint::enabled(it.item);
-        shellint::set(it.item, before);  // comme avant le test
+        if (hadFile) {  // comme avant le test, à l'octet près
+            CopyFileW(backup.c_str(), file.c_str(), FALSE);
+            DeleteFileW(backup.c_str());
+        }
+        if (it.item == shellint::Item::kAutostart && hadRun) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, runKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+                RegSetValueExW(key, L"SoundZ", 0, REG_SZ, reinterpret_cast<const BYTE*>(runValue), DWORD((wcslen(runValue) + 1) * sizeof(wchar_t)));
+                RegCloseKey(key);
+            }
+        }
         bool restored = shellint::enabled(it.item) == before;
         line(std::string(it.name) + " : activer " + (on ? "OK" : "ECHEC") + ", désactiver " + (off ? "OK" : "ECHEC") +
              ", état d'origine (" + (before ? "actif" : "inactif") + ") remis " + (restored ? "OK" : "ECHEC"));
