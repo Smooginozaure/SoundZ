@@ -165,33 +165,63 @@ bool renderSvg(const std::string& svg, Image& out) {
     return ok;
 }
 
-bool savePng(const std::wstring& path, const Image& image) {
-    if (!g_wic || image.empty()) return false;
+namespace {
+// PNG écrit dans un flux (fichier ou mémoire). Pixels BGRA, prémultipliés ou non.
+bool writePng(IStream* target, const uint32_t* pixels, int width, int height, bool premultiplied) {
     // PNG : couleurs « droites » (non prémultipliées).
-    std::vector<uint32_t> straight(image.pixels);
-    for (uint32_t& p : straight) {
-        uint32_t a = p >> 24;
-        if (a == 0 || a == 255) continue;
-        uint32_t b = std::min(255u, (p & 0xFF) * 255 / a), g = std::min(255u, ((p >> 8) & 0xFF) * 255 / a),
-                 r = std::min(255u, ((p >> 16) & 0xFF) * 255 / a);
-        p = a << 24 | r << 16 | g << 8 | b;
+    std::vector<uint32_t> straight(pixels, pixels + size_t(width) * size_t(height));
+    if (premultiplied) {
+        for (uint32_t& p : straight) {
+            uint32_t a = p >> 24;
+            if (a == 0 || a == 255) continue;
+            uint32_t b = std::min(255u, (p & 0xFF) * 255 / a), g = std::min(255u, ((p >> 8) & 0xFF) * 255 / a),
+                     r = std::min(255u, ((p >> 16) & 0xFF) * 255 / a);
+            p = a << 24 | r << 16 | g << 8 | b;
+        }
     }
-    IWICStream* stream = nullptr;
     IWICBitmapEncoder* encoder = nullptr;
     IWICBitmapFrameEncode* frame = nullptr;
     WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
-    bool ok = SUCCEEDED(g_wic->CreateStream(&stream)) &&
-              SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
-              SUCCEEDED(g_wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
-              SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+    const UINT w = UINT(width), h = UINT(height);
+    bool ok = SUCCEEDED(g_wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+              SUCCEEDED(encoder->Initialize(target, WICBitmapEncoderNoCache)) &&
               SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) &&
-              SUCCEEDED(frame->SetSize(kSize, kSize)) && SUCCEEDED(frame->SetPixelFormat(&format)) &&
+              SUCCEEDED(frame->SetSize(w, h)) && SUCCEEDED(frame->SetPixelFormat(&format)) &&
               IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA) &&
-              SUCCEEDED(frame->WritePixels(kSize, kSize * 4, kSize * kSize * 4, reinterpret_cast<BYTE*>(straight.data()))) &&
+              SUCCEEDED(frame->WritePixels(h, w * 4, w * h * 4, reinterpret_cast<BYTE*>(straight.data()))) &&
               SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
     release(frame);
     release(encoder);
+    return ok;
+}
+}  // namespace
+
+bool savePng(const std::wstring& path, const Image& image) {
+    if (!g_wic || image.empty()) return false;
+    IWICStream* stream = nullptr;
+    bool ok = SUCCEEDED(g_wic->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
+              writePng(stream, image.pixels.data(), kSize, kSize, true);
     release(stream);
+    return ok;
+}
+
+bool encodePng(const uint32_t* pixels, int width, int height, bool premultiplied, std::string& out) {
+    out.clear();
+    if (!g_wic || !pixels || width <= 0 || height <= 0) return false;
+    IStream* stream = SHCreateMemStream(nullptr, 0);
+    if (!stream) return false;
+    bool ok = writePng(stream, pixels, width, height, premultiplied);
+    STATSTG stat = {};
+    ok = ok && SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME));
+    if (ok) {
+        out.resize(size_t(stat.cbSize.QuadPart));
+        LARGE_INTEGER zero = {};
+        ULONG read = 0;
+        ok = SUCCEEDED(stream->Seek(zero, STREAM_SEEK_SET, nullptr)) &&
+             SUCCEEDED(stream->Read(out.data(), ULONG(out.size()), &read)) && read == out.size();
+    }
+    stream->Release();
+    if (!ok) out.clear();
     return ok;
 }
 

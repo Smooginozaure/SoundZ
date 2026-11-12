@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstdio>
 #include <cwctype>
 #include <string>
 
@@ -19,6 +20,24 @@ inline std::string narrow(const std::wstring& wide) {
     std::string out(size_t(n), '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.data(), int(wide.size()), out.data(), n, nullptr, nullptr);
     return out;
+}
+
+// Texte JSON entre guillemets (UTF-8), pour la télécommande du téléphone.
+inline std::string jsonText(const std::wstring& text) {
+    std::string out = "\"";
+    for (char c : narrow(text)) {
+        if (c == '"' || c == '\\') {
+            out += '\\';
+            out += c;
+        } else if (static_cast<unsigned char>(c) < 0x20) {
+            char escaped[8];
+            snprintf(escaped, sizeof(escaped), "\\u%04x", unsigned(static_cast<unsigned char>(c)));
+            out += escaped;
+        } else {
+            out += c;
+        }
+    }
+    return out + "\"";
 }
 
 inline std::wstring lower(std::wstring s) {

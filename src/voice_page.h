@@ -32,4 +32,8 @@ std::wstring deviceReport();  // --devicetest : micro, câble et retour casque q
 bool running();   // la voix part dans le câble (les sons du soundboard aussi)
 void shutdown();  // à la fermeture : arrêt propre et remise en place du micro par défaut
 
+// Télécommande du téléphone (remote.cpp) : l'état de l'onglet en JSON, et ses commandes (comme un clic sur le PC).
+std::string remoteJson();
+void remoteCommand(const std::string& action, int a, int b);
+
 }  // namespace voicepage

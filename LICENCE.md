@@ -39,6 +39,7 @@ Le Logiciel contient des composants d'autres auteurs, qui restent soumis à leur
 | [miniaudio](https://github.com/mackron/miniaudio) | David Reid | Domaine public ou MIT No Attribution, au choix (`third_party/miniaudio/LICENSE`) |
 | [signalsmith-stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) | Geraint Luff / Signalsmith Audio Ltd. | MIT (`third_party/signalsmith-stretch/LICENSE.txt`) |
 | [signalsmith-linear](https://github.com/Signalsmith-Audio/linear) | Signalsmith Audio | MIT (`third_party/signalsmith-linear/LICENSE.txt`) |
+| [QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) | Project Nayuki | MIT (`third_party/qrcodegen/LICENSE`) |
 
 Le texte de ces licences accompagne aussi le programme, dans le fichier `licences-tierces.txt` de l'archive.
 

@@ -24,6 +24,8 @@ bool loadFile(const std::wstring& path, Image& out);  // PNG, JPG, GIF, BMP… :
 bool renderText(const std::wstring& text, Image& out);  // emoji (en couleur) ou court texte
 bool renderSvg(const std::string& svg, Image& out);     // dessin vectoriel SVG (texte UTF-8)
 bool savePng(const std::wstring& path, const Image& image);
+// PNG en mémoire (télécommande du téléphone). Pixels BGRA, prémultipliés ou non.
+bool encodePng(const uint32_t* pixels, int width, int height, bool premultiplied, std::string& out);
 
 // Image à la taille voulue (pixels), pour AlphaBlend. À libérer avec DeleteObject.
 HBITMAP makeBitmap(const Image& image, int sizePx);

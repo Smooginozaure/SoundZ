@@ -15,6 +15,8 @@ struct Ui {
     HFONT bigFont = nullptr;    // grands titres
     HFONT smallFont = nullptr;  // petits textes
     std::wstring iniPath;
+    // Largeur des pages (DIP) : la fenêtre s'élargit au glissé ; les pages s'étirent avec elle.
+    int width = 400;
     // La sortie où l'utilisateur écoute (son casque, ses enceintes) : la sortie par défaut de Windows au
     // lancement. Sert à la musique transposée, au retour de la voix et au soundboard.
     std::wstring listenOutput, listenName;

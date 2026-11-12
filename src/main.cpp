@@ -22,6 +22,7 @@
 #include "sound_image.h"
 #include "sound_page.h"
 #include "voice_page.h"
+#include "remote.h"
 
 int runSelfTest(const std::wstring& reportPath);                                   // selftest.cpp
 int runEngineTest(const std::wstring& reportPath, const std::wstring& testOutput);  // selftest.cpp
@@ -44,7 +45,7 @@ constexpr UINT_PTR kVoiceTimer = 3;
 constexpr UINT_PTR kTaskbarTimer = 4;   // bouton de la barre des tâches refait 1,5 s après l'apparition…
 constexpr UINT_PTR kTaskbarTimer2 = 5;  // … et encore à 5 s (Windows le place parfois en retard)
 constexpr int kTickCount = PitchEngine::kMaxSemitones - PitchEngine::kMinSemitones + 1;
-constexpr int kWidth = 400;   // largeur de la fenêtre (DIP)
+constexpr int kMinWidth = 400, kMaxWidth = 1000;  // largeur de la fenêtre (DIP) : réglable au glissé
 constexpr int kPageTop = 46;  // sous les onglets
 
 enum ControlId : int {
@@ -62,9 +63,12 @@ enum ControlId : int {
     IDC_DEV_CABLE,  // un seul câble virtuel : voix ou musique
     IDC_DEV_OPEN,  // ouvre la page « Appareils » (comme ⚙ → Appareils… ; sert aussi aux tests)
     IDC_QUIT,      // quitte vraiment SoundZ (même si la croix réduit la fenêtre)
+    IDC_REMOTE_OPEN,  // ouvre la page « Télécommande » (comme ⚙ → Télécommande… ; sert aussi aux tests)
 };
 
 constexpr int kDevicesPage = 3;  // page ouverte depuis ⚙ (pas un onglet)
+constexpr int kRemotePage = 4;   // page « Télécommande sur téléphone », ouverte depuis ⚙
+static_assert(IDC_DEV_BACK == remote::kBackId, "le bouton Retour de la télécommande revient comme celui des Appareils");
 bool g_quitting = false;         // « Quitter SoundZ » : la fermeture n'est plus une réduction
 
 // Option « Réduire au lieu de fermer » : la croix réduit SoundZ dans la barre des tâches (tout continue).
@@ -203,7 +207,7 @@ void showPage(int page);
 
 // Menu ⚙ : appareils, raccourcis et lancement avec Windows (cochés selon ce qui existe déjà).
 void showOptions() {
-    enum { kStartMenu = 1, kDesktop, kAutostart, kFolder, kDevices, kMinimize, kQuit, kTray };
+    enum { kStartMenu = 1, kDesktop, kAutostart, kFolder, kDevices, kMinimize, kQuit, kTray, kRemote };
     const struct { int id; shellint::Item item; const wchar_t* text; } items[] = {
         {kStartMenu, shellint::Item::kStartMenu, L"Raccourci dans le menu Démarrer"},
         {kDesktop, shellint::Item::kDesktop, L"Icône sur le Bureau"},
@@ -211,6 +215,7 @@ void showOptions() {
     };
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, kDevices, L"Appareils (sortie et micro)…");
+    AppendMenuW(menu, MF_STRING, kRemote, L"Télécommande sur téléphone…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     for (const auto& it : items)
         AppendMenuW(menu, MF_STRING | (shellint::enabled(it.item) ? MF_CHECKED : 0), it.id, it.text);
@@ -230,6 +235,7 @@ void showOptions() {
             MessageBoxW(ui.wnd, L"Windows a refusé la modification.", L"SoundZ", MB_OK | MB_ICONWARNING);
     }
     if (choice == kDevices) showPage(kDevicesPage);
+    if (choice == kRemote) showPage(kRemotePage);
     if (choice == kMinimize) iniWrite(L"fenetre", L"reduire", minimizeOnClose() ? L"0" : L"1");
     if (choice == kTray) {
         const bool on = !trayEnabled();
@@ -477,7 +483,21 @@ void updateUi() {
     updateStatus();
 }
 
+void toggleMusic() {
+    if (g.engine.running()) {
+        stopPitch();
+        g.error.clear();
+    } else {
+        refreshDevices();
+        startPitch();
+    }
+    updateUi();
+}
+
 void createFonts() {
+    static UINT fontsDpi = 0;  // refaites seulement si l'échelle change (pas à chaque pas d'un redimensionnement)
+    if (ui.font && fontsDpi == ui.dpi) return;
+    fontsDpi = ui.dpi;
     for (HFONT* f : {&ui.font, &ui.bigFont, &ui.smallFont}) {
         if (*f) DeleteObject(*f);
     }
@@ -501,7 +521,7 @@ void createFonts() {
 // Page Musique ; renvoie le bas de la page (DIP).
 int layoutPitch(int top, bool shown) {
     const int margin = 20;
-    const int inner = kWidth - 2 * margin;
+    const int inner = ui.width - 2 * margin;
 
     place(g.label, margin, top + 6, inner, 44, ui.bigFont);
     place(g.slider, margin, top + 54, inner, 34, ui.font);
@@ -519,7 +539,7 @@ int layoutPitch(int top, bool shown) {
     }
 
     place(g.reset, margin, top + 118, 170, 32, ui.font);
-    place(g.toggle, kWidth - margin - 170, top + 118, 170, 32, ui.font);
+    place(g.toggle, ui.width - margin - 170, top + 118, 170, 32, ui.font);
     place(g.status, margin, top + 162, inner, 40, ui.smallFont);
     place(g.settings, margin, top + 208, 110, 26, ui.smallFont);
     place(g.sasLabel, margin, top + 246, inner, 20, ui.smallFont);
@@ -614,7 +634,7 @@ void onCableChosen() {
 }
 
 int layoutDevices(int top, bool shown) {
-    const int margin = 20, inner = kWidth - 2 * margin;
+    const int margin = 20, inner = ui.width - 2 * margin;
     int y = top + 6;
     place(d.title, margin, y, inner, 28, ui.font);
     y += 32;
@@ -706,7 +726,7 @@ std::wstring environmentReport() {
     auto cableName = [](int i) {
         return i >= 0 ? g.devices[size_t(i)].name.substr(0, g.devices[size_t(i)].name.find(L" (")) : std::wstring(L"aucun");
     };
-    const wchar_t* tabs[] = {L"Musique", L"Voix (micro)", L"Soundboard", L"Appareils"};
+    const wchar_t* tabs[] = {L"Musique", L"Voix (micro)", L"Soundboard", L"Appareils", L"Télécommande"};
     std::wstring out = iniRead(L"vocoder", L"sortie");
     std::wstring mic = iniRead(L"voix", L"micro");
     return L"SoundZ : " + soundzVersion() + L"\n" + L"Windows : " + windowsVersion() + L"\n" + L"Câbles virtuels : " +
@@ -716,7 +736,7 @@ std::wstring environmentReport() {
            (mic.empty() ? L" (automatique)" : L" (choisi)") + L"\n" + L"Musique : " +
            (g.engine.running() ? L"active" : g.error.empty() ? L"désactivée" : L"erreur — " + g.error) + L"\n" +
            L"Voix : " + (voicepage::running() ? L"active" : L"inactive") + L"\n" + L"Onglet ouvert : " +
-           tabs[std::clamp(g_page, 0, 3)];
+           tabs[std::clamp(g_page, 0, 4)];
 }
 
 std::wstring urlEncode(const std::wstring& text) {
@@ -814,25 +834,49 @@ void refreshTaskbarButton() {
     taskbar->Release();
 }
 
-void layout() {
+int g_windowHeight = 0;  // hauteur de la fenêtre (px) : fixée par le contenu de la page ouverte
+bool g_inLayout = false;
+bool g_ready = false;    // contrôles créés : les redimensionnements peuvent réorganiser la fenêtre
+
+// keepWidth : pendant un glissé, on garde la largeur donnée par l'utilisateur (sans arrondi qui la ferait sauter).
+void layout(bool keepWidth = false) {
+    g_inLayout = true;
     createFonts();
     // Les onglets : des « pastilles », l'onglet ouvert en teinte Orage.
     const int tabWidth[3] = {80, 106, 102};
     for (int i = 0, x = 12; i < 3; x += tabWidth[i] + 6, ++i) place(g_tabs[i], x, 8, tabWidth[i], 30, ui.font);
-    place(g_options, kWidth - 12 - 34, 8, 34, 30, ui.font);
-    place(g_feedback, kWidth - 12 - 34 - 4 - 34, 8, 34, 30, ui.font);
+    place(g_options, ui.width - 12 - 34, 8, 34, 30, ui.font);
+    place(g_feedback, ui.width - 12 - 34 - 4 - 34, 8, 34, 30, ui.font);
     int pitchBottom = layoutPitch(kPageTop, g_page == 0);
     int voiceBottom = voicepage::layout(kPageTop, g_page == 1);
     int soundBottom = soundpage::layout(kPageTop, g_page == 2);
     int devicesBottom = layoutDevices(kPageTop, g_page == kDevicesPage);
-    int bottom = g_page == 0 ? pitchBottom : g_page == 1 ? voiceBottom : g_page == 2 ? soundBottom : devicesBottom;
+    int remoteBottom = remote::layout(kPageTop, g_page == kRemotePage);
+    int bottom = g_page == 0 ? pitchBottom : g_page == 1 ? voiceBottom : g_page == 2 ? soundBottom
+               : g_page == kDevicesPage ? devicesBottom : remoteBottom;
 
-    RECT rect = {0, 0, S(kWidth), S(bottom + 4)};
+    RECT rect = {0, 0, S(ui.width), S(bottom + 4)};
     DWORD style = DWORD(GetWindowLongPtrW(ui.wnd, GWL_STYLE));
     AdjustWindowRectExForDpi(&rect, style, FALSE, 0, ui.dpi);
-    SetWindowPos(ui.wnd, nullptr, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    g_windowHeight = rect.bottom - rect.top;  // la hauteur suit le contenu ; seule la largeur se règle au glissé
+    RECT now;
+    GetWindowRect(ui.wnd, &now);
+    const int width = keepWidth ? now.right - now.left : rect.right - rect.left;
+    if (width != now.right - now.left || g_windowHeight != now.bottom - now.top)
+        SetWindowPos(ui.wnd, nullptr, 0, 0, width, g_windowHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     InvalidateRect(ui.wnd, nullptr, TRUE);
+    g_inLayout = false;
+}
+
+// Bornes du glissé : largeur de 400 à 1000 (DIP), hauteur fixée par la page.
+void minMaxSize(MINMAXINFO* mm) {
+    const DWORD style = DWORD(GetWindowLongPtrW(ui.wnd, GWL_STYLE));
+    RECT smallest = {0, 0, S(kMinWidth), 0}, largest = {0, 0, S(kMaxWidth), 0};
+    AdjustWindowRectExForDpi(&smallest, style, FALSE, 0, ui.dpi);
+    AdjustWindowRectExForDpi(&largest, style, FALSE, 0, ui.dpi);
+    mm->ptMinTrackSize.x = smallest.right - smallest.left;
+    mm->ptMaxTrackSize.x = largest.right - largest.left;
+    if (g_windowHeight > 0) mm->ptMinTrackSize.y = mm->ptMaxTrackSize.y = g_windowHeight;
 }
 
 // Icône dessinée au lancement : carré arrondi teinte Orage avec « SZ » en blanc (comme assets/icon.svg).
@@ -937,6 +981,7 @@ void createControls() {
     theme::darkControl(g.outCombo);
 
     createDevicesPage();
+    remote::create();
     voicepage::create();
     soundpage::create();
 }
@@ -985,11 +1030,12 @@ int runDeviceTest(const std::wstring& reportPath) {
 }
 
 void showPage(int page) {
-    if (page == kDevicesPage) {
-        if (g_page != kDevicesPage) g_lastTab = g_page;
-        fillDevicesPage();
+    if (page >= kDevicesPage) {  // pages ouvertes depuis ⚙ : pas retenues, « ← Retour » revient à l'onglet d'avant
+        if (g_page < kDevicesPage) g_lastTab = g_page;
+        if (page == kDevicesPage) fillDevicesPage();
+        if (page == kRemotePage) remote::pageShown();
     } else {
-        iniWrite(L"fenetre", L"onglet", std::to_wstring(page));  // la page « Appareils » n'est pas retenue
+        iniWrite(L"fenetre", L"onglet", std::to_wstring(page));
     }
     g_page = page;
     for (int i = 0; i < 3; ++i) SendMessageW(g_tabs[i], BM_SETCHECK, i == page ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -997,6 +1043,7 @@ void showPage(int page) {
 }
 
 void shutdownAll() {
+    remote::shutdown();  // d'abord : plus aucune commande du téléphone pendant l'arrêt
     stopPitch();
     voicepage::shutdown();
     soundpage::shutdown();
@@ -1048,14 +1095,7 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetFocus(g.slider);
             return 0;
         case IDC_TOGGLE:
-            if (g.engine.running()) {
-                stopPitch();
-                g.error.clear();
-            } else {
-                refreshDevices();
-                startPitch();
-            }
-            updateUi();
+            toggleMusic();
             return 0;
         case IDC_SETTINGS:
             g.settingsShown = !g.settingsShown;
@@ -1075,6 +1115,9 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_DEV_OPEN:
             showPage(kDevicesPage);
             return 0;
+        case IDC_REMOTE_OPEN:
+            showPage(kRemotePage);
+            return 0;
         case IDC_QUIT:
             g_quitting = true;
             PostMessageW(wnd, WM_CLOSE, 0, 0);
@@ -1084,6 +1127,7 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (HIWORD(wp) == CBN_SELCHANGE) onComboChanged(LOWORD(wp));
             return 0;
         }
+        if (remote::onCommand(wp, lp)) return 0;
         if (voicepage::onCommand(wp, lp)) return 0;
         if (soundpage::onCommand(wp, lp)) return 0;
         break;
@@ -1095,6 +1139,7 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         if (soundpage::onDrawItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lp))) return TRUE;
+        if (remote::onDrawItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lp))) return TRUE;
         break;
 
     case WM_CONTEXTMENU:
@@ -1106,7 +1151,10 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_TIMER:
-        if (wp == kStatusTimer) updateStatus();
+        if (wp == kStatusTimer) {
+            updateStatus();
+            remote::onTimer();
+        }
         if (wp == kVolumeTimer) followVolume();
         if (wp == kTaskbarTimer || wp == kTaskbarTimer2) {
             KillTimer(wnd, wp);
@@ -1129,6 +1177,9 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         voicepage::onDeviceLost();
         return 0;
 
+    case remote::WM_APP_REMOTE:  // une requête du téléphone
+        return remote::onMessage(lp);
+
     case voicepage::WM_APP_RELAYOUT:
         layout();
         return 0;
@@ -1149,7 +1200,8 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         COLORREF text = theme::kText;
         bool voiceError = false;
         if (control == g.status) text = g.error.empty() ? theme::kMuted : theme::kDanger;
-        else if (voicepage::isStatus(control, voiceError) || soundpage::isStatus(control, voiceError))
+        else if (voicepage::isStatus(control, voiceError) || soundpage::isStatus(control, voiceError) ||
+                 remote::isStatus(control, voiceError))
             text = voiceError ? theme::kDanger : theme::kMuted;
         else if (control == g.sasLabel || control == g.outLabel) text = theme::kText2;
         else if (control == d.intro || control == d.outNow || control == d.micNow || control == d.cableNow) text = theme::kMuted;
@@ -1174,6 +1226,22 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_SIZE:
         if (wp == SIZE_MINIMIZED && trayEnabled()) hideToTray();  // réduit : direction la zone de notification
+        // Largeur changée au glissé : les pages s'étirent (les noms longs des sons tiennent mieux).
+        if (wp != SIZE_MINIMIZED && g_ready && !g_inLayout) {
+            const int width = std::clamp(MulDiv(LOWORD(lp), 96, int(ui.dpi)), kMinWidth, kMaxWidth);
+            if (width != ui.width) {
+                ui.width = width;
+                layout(true);
+            }
+        }
+        return 0;
+
+    case WM_GETMINMAXINFO:
+        minMaxSize(reinterpret_cast<MINMAXINFO*>(lp));
+        return 0;
+
+    case WM_EXITSIZEMOVE:  // fin du glissé : la largeur est retenue pour la prochaine fois
+        iniWrite(L"fenetre", L"largeur", std::to_wstring(ui.width));
         return 0;
 
     case WM_APP_TRAY:
@@ -1222,6 +1290,26 @@ LRESULT CALLBACK windowProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
 void onDeviceLost(void*) { PostMessageW(ui.wnd, WM_APP_DEVICE_LOST, 0, 0); }
 
 }  // namespace
+
+// ---------------------------------------------------------------- onglet Musique, pour la télécommande du téléphone
+
+namespace musicpage {
+
+std::string remoteJson() {
+    const int semi = sliderPos(g.slider);
+    wchar_t status[512] = {};
+    GetWindowTextW(g.status, status, 512);
+    return std::string("{\"on\":") + (g.engine.running() ? "true" : "false") + ",\"semi\":" + std::to_string(semi) +
+           ",\"status\":" + jsonText(status) + ",\"err\":" + (g.error.empty() ? "false" : "true") + "}";
+}
+
+// Mêmes effets que dans l'onglet Musique du PC.
+void remoteCommand(const std::string& action, int a, int) {
+    if (action == "semi") applySemitones(a);  // bornée à −4…+4
+    else if (action == "toggle") toggleMusic();
+}
+
+}  // namespace musicpage
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     int argc = 0;
@@ -1280,8 +1368,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (!wc.hIconSm) wc.hIconSm = makeIcon(GetSystemMetrics(SM_CXSMICON));
     RegisterClassExW(&wc);
 
-    ui.wnd = CreateWindowExW(0, kClassName, kTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 400, 300, nullptr, nullptr, instance, nullptr);
+    // WS_THICKFRAME : la largeur se règle au glissé du bord (la hauteur suit le contenu de la page).
+    ui.wnd = CreateWindowExW(0, kClassName, kTitle,
+                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN, CW_USEDEFAULT,
+                             CW_USEDEFAULT, 400, 300, nullptr, nullptr, instance, nullptr);
+    ui.width = std::clamp(iniReadInt(L"fenetre", L"largeur", kMinWidth), kMinWidth, kMaxWidth);
     ui.dpi = GetDpiForWindow(ui.wnd);
     g_trayIcon = wc.hIconSm;
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
@@ -1291,6 +1382,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_page = std::clamp(iniReadInt(L"fenetre", L"onglet", 0), 0, 2);
     for (int i = 0; i < 3; ++i) SendMessageW(g_tabs[i], BM_SETCHECK, i == g_page ? BST_CHECKED : BST_UNCHECKED, 0);
     layout();
+    g_ready = true;
 
     std::wstring error;
     if (!g.engine.init(error)) {
@@ -1303,6 +1395,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     voicepage::startup();
     soundpage::startup();
+    remote::startup();  // la télécommande, si elle était activée
     shellint::refresh();  // SoundZ a changé de dossier ? ses raccourcis suivent
     applySemitones(0);
     updateUi();

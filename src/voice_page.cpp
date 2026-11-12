@@ -238,8 +238,8 @@ void refreshDevices() {
     fillCombo(p.micCombo, p.mics, p.mic);
     fillCombo(p.cableCombo, p.outs, p.cable);
     fillCombo(p.headsetCombo, p.outs, p.headset);
-    const std::wstring where = p.headset >= 0 ? L" (" + shortDeviceName(p.outs[size_t(p.headset)].name) + L")" : L"";
-    setText(p.monitor, L"M'entendre dans le casque" + where);
+    const std::wstring where = p.headset >= 0 ? L"  ·  " + shortDeviceName(p.outs[size_t(p.headset)].name) : L"";
+    setText(p.monitor, L"Entendre ma voix (écho)" + where);
 }
 
 // Micro virtuel vu par les applis : « CABLE-A Input » (sortie) devient « CABLE-A Output » (micro), de même pour
@@ -339,6 +339,16 @@ void updateUi() {
     setText(p.status, text);
 }
 
+void toggleVoice() {
+    if (p.engine.running()) {
+        stopVoice();
+        p.error.clear();
+    } else {
+        startVoice();
+    }
+    updateUi();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- interface publique
@@ -359,7 +369,7 @@ void create() {
     p.level = theme::meter();
     SendMessageW(p.level, PBM_SETRANGE32, 0, 100);
     p.chords = theme::button(L"Accords (chœur de robots, vocodeur)", theme::Kind::kToggle, IDC_CHORDS);
-    p.monitor = theme::button(L"M'entendre dans le casque", theme::Kind::kToggle, IDC_MONITOR);
+    p.monitor = theme::button(L"Entendre ma voix (écho)", theme::Kind::kToggle, IDC_MONITOR);
     p.presetLabel = makeControl(L"STATIC", L"Préréglages :", SS_LEFT | SS_CENTERIMAGE);
     const wchar_t* presetNames[4] = {L"Naturel", L"T-Pain", L"Robot", L"Chœur"};
     for (int i = 0; i < 4; ++i)
@@ -379,9 +389,10 @@ void create() {
 
 int layout(int top, bool shown) {
     p.shown = shown;
-    const int margin = 20, width = 400, inner = width - 2 * margin;
+    const int margin = 20, width = ui.width, inner = width - 2 * margin;
     int y = top + 4;
-    for (int i = 0; i < 3; ++i) place(p.modes[i], margin + i * 123, y, 114, 30, ui.font);
+    const int modeW = (inner - 2 * 9) / 3;  // 114 à la largeur de départ
+    for (int i = 0; i < 3; ++i) place(p.modes[i], margin + i * (modeW + 9), y, modeW, 30, ui.font);
     y += 40;
     place(p.note, margin, y, inner, 36, ui.bigFont);
     y += 36;
@@ -400,7 +411,8 @@ int layout(int top, bool shown) {
     place(p.monitor, margin, y, inner, 22, ui.smallFont);
     y += 32;
     place(p.presetLabel, margin, y, 86, 28, ui.smallFont);
-    for (int i = 0; i < 4; ++i) place(p.presets[i], margin + 88 + i * 68, y, 64, 28, ui.smallFont);
+    const int presetW = (inner - 88 - 3 * 4) / 4;  // 64 à la largeur de départ
+    for (int i = 0; i < 4; ++i) place(p.presets[i], margin + 88 + i * (presetW + 4), y, presetW, 28, ui.smallFont);
     y += 40;
     place(p.toggle, margin, y, 200, 32, ui.font);
     place(p.settings, width - margin - 120, y, 120, 32, ui.smallFont);
@@ -450,13 +462,7 @@ bool onCommand(WPARAM wp, LPARAM) {
         applyPreset(id);
         return true;
     case IDC_VTOGGLE:
-        if (p.engine.running()) {
-            stopVoice();
-            p.error.clear();
-        } else {
-            startVoice();
-        }
-        updateUi();
+        toggleVoice();
         return true;
     case IDC_VSETTINGS:
         p.settingsShown = !p.settingsShown;
@@ -601,5 +607,57 @@ std::wstring deviceReport() {
 bool running() { return p.engine.running(); }
 
 void shutdown() { stopVoice(); }
+
+// ---------------------------------------------------------------- télécommande du téléphone
+
+std::string remoteJson() {
+    auto flag = [](bool b) { return std::string(b ? "true" : "false"); };
+    const bool on = p.engine.running();
+    std::string rows = "[";
+    for (int r = 0; r < kRowCount; ++r) {
+        const int v = sliderPos(p.rowSlider[r]);
+        if (r) rows += ",";
+        rows += "{\"label\":" + jsonText(rowText(r, v)) + ",\"min\":" + std::to_string(kRows[r].minValue) +
+                ",\"max\":" + std::to_string(kRows[r].maxValue) + ",\"value\":" + std::to_string(v) + "}";
+    }
+    rows += "]";
+    std::wstring note = L"—";
+    int level = 0;
+    if (on) {
+        const float detected = p.engine.detectedMidi(), target = p.engine.targetMidi();
+        if (detected > 0) note = p.mode == voice::kModeNone ? withCents(detected) : withCents(detected) + L"  →  " + withCents(target);
+        const float amplitude = p.engine.level();
+        const float db = amplitude > 1e-5f ? 20 * std::log10(amplitude) : -100;
+        level = std::clamp(int((db + 60) * 100 / 60), 0, 100);
+    }
+    wchar_t status[512] = {}, monitor[256] = {};
+    GetWindowTextW(p.status, status, 512);
+    GetWindowTextW(p.monitor, monitor, 256);
+    return "{\"on\":" + flag(on) + ",\"status\":" + jsonText(status) + ",\"err\":" + flag(!p.error.empty()) +
+           ",\"mode\":" + std::to_string(p.mode) + ",\"rows\":" + rows +
+           ",\"chords\":" + flag(SendMessageW(p.chords, BM_GETCHECK, 0, 0) == BST_CHECKED) +
+           ",\"monitor\":" + flag(SendMessageW(p.monitor, BM_GETCHECK, 0, 0) == BST_CHECKED) + ",\"monitorLabel\":" + jsonText(monitor) +
+           ",\"note\":" + jsonText(note) + ",\"level\":" + std::to_string(level) + "}";
+}
+
+// Mêmes effets qu'un clic dans l'onglet Voix : les contrôles du PC suivent.
+void remoteCommand(const std::string& action, int a, int b) {
+    if (action == "toggle") {
+        toggleVoice();
+    } else if (action == "mode") {
+        applyMode(a, true);
+    } else if (action == "row" && a >= 0 && a < kRowCount) {
+        setRow(a, std::clamp(b, kRows[a].minValue, kRows[a].maxValue));
+    } else if (action == "chords" || action == "monitor") {
+        HWND h = action == "chords" ? p.chords : p.monitor;
+        SendMessageW(h, BM_SETCHECK, a ? BST_CHECKED : BST_UNCHECKED, 0);
+        InvalidateRect(h, nullptr, FALSE);
+        applyChecks(true);
+    } else if (action == "preset" && a >= 0 && a < 4) {
+        applyPreset(IDC_PRESET_NATURAL + a);
+        InvalidateRect(p.chords, nullptr, FALSE);
+    }
+    updateUi();
+}
 
 }  // namespace voicepage

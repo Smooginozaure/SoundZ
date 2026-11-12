@@ -14,6 +14,8 @@
 
 #include "default_output.h"
 #include "miniaudio/miniaudio.h"
+#include "myinstants.h"
+#include "overlay.h"
 #include "sound_dsp.h"
 #include "sound_image.h"
 #include "sound_mixer.h"
@@ -28,19 +30,22 @@ namespace {
 
 constexpr int kMaxSounds = 24;
 constexpr int kColumns = 5;
-constexpr int kTileW = 67, kTileH = 100, kGap = 6;  // DIP
+constexpr int kTileH = 100, kGap = 6;  // DIP ; la largeur des boutons suit celle de la fenêtre (67 au départ)
 constexpr int kImageDip = 44;
 constexpr int kPreviewDip = 72;
 constexpr int kPreviewTag = 63;
 constexpr int kMaxWaitSeconds = 20;  // attente du son après « Capturer »
 constexpr int kMaxDuration = 10;
 constexpr int kMaxPending = 5;  // captures « à trier »
+constexpr int kBrowseRows = 8;  // résultats de Myinstants affichés à la fois
 constexpr int kBipTag = 62;
+constexpr int kOverlayHotkeyId = 0x4FFD;
 constexpr int kReplayHotkeyId = 0x4FFE;
 constexpr int kStopHotkeyId = 0x4FFF;
 constexpr int kHotkeyBase = 0x5000;
 constexpr WORD kStopHotkey = MAKEWORD('0', HOTKEYF_CONTROL | HOTKEYF_SHIFT);
 constexpr WORD kDefaultReplayHotkey = MAKEWORD(VK_F12, HOTKEYF_CONTROL | HOTKEYF_SHIFT);
+constexpr WORD kDefaultOverlayHotkey = MAKEWORD(VK_F11, HOTKEYF_CONTROL | HOTKEYF_SHIFT);
 constexpr size_t kMinSelection = sound::kRate / 10;  // 0,1 s
 constexpr wchar_t kSection[] = L"soundboard";
 
@@ -68,7 +73,18 @@ enum ControlId : int {
     IDC_REPLAYNONE,
     IDC_AIDRAW,
     IDC_AIEMOJI,
+    IDC_OVERLAYKEY,
+    IDC_OVERLAYNONE,
     IDC_PENDING0 = 700,  // … IDC_PENDING0 + kMaxPending - 1
+    IDC_MI_QUERY = 750,  // recherche sur Myinstants
+    IDC_MI_GO,
+    IDC_MI_PREV,
+    IDC_MI_NEXT,
+    IDC_MI_BACK,
+    IDC_MI_PLAY0 = 760,  // … + kBrowseRows - 1 : ▶ d'un résultat
+    IDC_MI_ADD0 = 770,   // … + kBrowseRows - 1 : + Ajouter
+    IDC_MI_NAME0 = 780,  // … + kBrowseRows - 1 : titre d'un résultat
+    IDC_MI_STATUS = 790,
 };
 
 enum MenuId : int { kMenuPlay = 1, kMenuEdit, kMenuLeft, kMenuRight, kMenuDelete };
@@ -86,6 +102,8 @@ struct Sound {
     int cleaning = 60;   // nettoyage, %
     WORD hotkey = 0;     // format du contrôle « raccourci » : touche + modificateurs HOTKEYF_*
     bool hotkeyOk = true;
+    bool unnamed = false;  // gardé depuis l'overlay en jeu : nom et image à choisir sur le bureau
+    std::string source;    // son de Myinstants : son adresse sur le site (« /media/sounds/….mp3 »)
     Samples samples;
     soundimg::Image image;
     HBITMAP bitmap = nullptr;
@@ -136,6 +154,28 @@ struct Editor {
     size_t anchor = 0, dragStart = 0, dragEnd = 0;
 };
 
+// Recherche sur Myinstants : les résultats, page par page, et les sons déjà téléchargés.
+struct Browse {
+    bool open = false;
+    std::wstring query;
+    std::vector<myinstants::Item> items;
+    int sitePage = 0;         // dernière page du site chargée
+    bool more = false;        // le site a sans doute d'autres résultats
+    bool searching = false;
+    bool advance = false;     // « Suivants » attend la page suivante du site
+    int first = 0;            // premier résultat affiché
+    int searchId = 0;         // recherche en cours (une réponse plus ancienne est ignorée)
+    int nextId = 1000;
+    std::wstring message;
+    bool messageError = false;
+    struct Clip {
+        Samples raw, cleaned;
+        bool truncated = false;
+    };
+    std::vector<std::pair<std::string, Clip>> clips;  // déjà téléchargés (mp3 -> son)
+    std::vector<std::pair<myinstants::Item, int>> waiting;  // en téléchargement : 1 écouter, 2 ajouter
+};
+
 // Une capture des 10 dernières secondes, en attente de découpage (fichier dans Sons\a_trier).
 struct Pending {
     std::wstring file;
@@ -156,6 +196,12 @@ struct Page {
     HWND wave = nullptr, selLabel = nullptr;
     HWND pendingTiles[kMaxPending] = {};
     HWND replayLabel = nullptr, replayKey = nullptr, replayNone = nullptr;
+    HWND overlayLabel = nullptr, overlayKey = nullptr, overlayNone = nullptr;
+    // Myinstants : la barre de recherche (sous les boutons), puis la page des résultats.
+    HWND miLabel = nullptr, miQuery = nullptr, miGo = nullptr, miTitle = nullptr, miStatus = nullptr;
+    HWND miName[kBrowseRows] = {}, miPlay[kBrowseRows] = {}, miAdd[kBrowseRows] = {};
+    HWND miPrev = nullptr, miNext = nullptr, miPage = nullptr, miBack = nullptr;
+    Browse browse;
     HFONT emojiFont = nullptr, tinyFont = nullptr;
     UINT fontDpi = 0;
     bool shown = false;
@@ -179,6 +225,9 @@ struct Page {
     std::wstring replayEndpoint;
     DWORD replayCheck = 0;
     WORD replayHotkey = kDefaultReplayHotkey;
+    WORD overlayHotkey = kDefaultOverlayHotkey;
+    uint32_t version = 1;  // change à chaque modification des sons ou des captures (l'overlay se redessine)
+    Samples lastPreview;   // dernier son écouté depuis l'overlay
     std::vector<Pending> pending;
     soundimg::Image scissors;
     HBITMAP scissorsBitmap = nullptr;
@@ -212,7 +261,10 @@ std::wstring trim(std::wstring s) {
     return s.substr(i);
 }
 
-void relayout() { PostMessageW(ui.wnd, voicepage::WM_APP_RELAYOUT, 0, 0); }
+void relayout() {
+    ++p.version;
+    PostMessageW(ui.wnd, voicepage::WM_APP_RELAYOUT, 0, 0);
+}
 
 // ---------------------------------------------------------------- raccourcis clavier
 
@@ -248,6 +300,10 @@ void registerHotkeys() {
     if (LOBYTE(p.replayHotkey) && !registerOne(kReplayHotkeyId, p.replayHotkey)) {
         if (!p.hotkeyError.empty()) p.hotkeyError += L", ";
         p.hotkeyError += hotkeyText(p.replayHotkey) + L" (10 dernières secondes)";
+    }
+    if (LOBYTE(p.overlayHotkey) && !registerOne(kOverlayHotkeyId, p.overlayHotkey)) {
+        if (!p.hotkeyError.empty()) p.hotkeyError += L", ";
+        p.hotkeyError += hotkeyText(p.overlayHotkey) + L" (overlay)";
     }
     registerOne(kStopHotkeyId, kStopHotkey);
 }
@@ -319,7 +375,7 @@ bool openPlayer() {
             }
         }
     }
-    setText(p.hear, L"M'entendre aussi dans le casque" + (name.empty() ? L"" : L" (" + shortDeviceName(name) + L")"));
+    setText(p.hear, L"Entendre les sons du soundboard" + (name.empty() ? L"" : L"  ·  " + shortDeviceName(name)));
     ma_device_config c = ma_device_config_init(ma_device_type_playback);
     c.playback.pDeviceID = id;
     c.playback.format = ma_format_f32;
@@ -456,6 +512,7 @@ void captureReplay() {
     if (x.size() < size_t(sound::kRate / 2) || peak < 0.002f) {
         bip(false);
         setNotice(L"Rien à garder : le PC n'a joué aucun son ces 10 dernières secondes.", true);
+        overlay::notify(L"Rien à garder : aucun son ces 10 dernières secondes", true);
         return;
     }
     CreateDirectoryW(p.folder.c_str(), nullptr);
@@ -472,6 +529,7 @@ void captureReplay() {
     if (!sound::writeWav(item.file, x)) {
         bip(false);
         setNotice(L"Impossible d'enregistrer la capture dans le dossier « Sons ».", true);
+        overlay::notify(L"Capture impossible à enregistrer (dossier « Sons »)", true);
         return;
     }
     // Pas plus de 5 captures en attente : la plus ancienne laisse sa place.
@@ -487,6 +545,7 @@ void captureReplay() {
     bip(true);
     setNotice(L"✂ 10 dernières secondes gardées (" + item.time + L"). Clique sur le bouton « À trier » pour choisir le passage.",
               false);
+    overlay::notify(L"✂ 10 dernières secondes gardées (" + item.time + L")", false);
     relayout();
 }
 
@@ -515,6 +574,8 @@ void saveIndex() {
         WritePrivateProfileStringW(section.c_str(), L"volume", std::to_wstring(s.volume).c_str(), path.c_str());
         WritePrivateProfileStringW(section.c_str(), L"nettoyage", std::to_wstring(s.cleaning).c_str(), path.c_str());
         WritePrivateProfileStringW(section.c_str(), L"raccourci", std::to_wstring(s.hotkey).c_str(), path.c_str());
+        WritePrivateProfileStringW(section.c_str(), L"a_nommer", s.unnamed ? L"1" : nullptr, path.c_str());
+        WritePrivateProfileStringW(section.c_str(), L"myinstants", s.source.empty() ? nullptr : widen(s.source).c_str(), path.c_str());
     }
     WritePrivateProfileStringW(L"liste", L"ordre", order.c_str(), path.c_str());
 }
@@ -548,9 +609,43 @@ void loadAll() {
         s.hotkey = WORD(_wtoi(indexRead(section, L"raccourci").c_str()));
         std::wstring cleaning = indexRead(section, L"nettoyage");
         s.cleaning = cleaning.empty() ? 60 : std::clamp(_wtoi(cleaning.c_str()), 0, 100);
+        s.unnamed = indexRead(section, L"a_nommer") == L"1";
+        s.source = narrow(indexRead(section, L"myinstants"));
         if (!soundimg::loadFile(pngPath(uid), s.image)) soundimg::renderText(s.emoji.empty() ? L"🔊" : s.emoji, s.image);
         p.sounds.push_back(std::move(s));
     }
+}
+
+// Nouveau son dans le soundboard, sans passer par l'éditeur : capture gardée en jeu (unnamed : nom et image à
+// choisir sur le bureau) ou son de Myinstants (source). Image 🔊, prochain raccourci libre.
+// Renvoie un message d'erreur, vide si tout va bien.
+std::wstring addSound(const std::wstring& name, bool unnamed, const std::vector<float>& raw, const Samples& cleaned, int volume,
+                      int cleaning, const std::string& source) {
+    if (!cleaned || cleaned->empty()) return L"Ce son est silencieux.";
+    if (int(p.sounds.size()) >= kMaxSounds)
+        return L"Le soundboard est plein (" + std::to_wstring(kMaxSounds) + L" sons) : supprimes-en un (clic droit → Supprimer).";
+    Sound s;
+    int uid = 1;
+    while (findUid(uid) || GetFileAttributesW(wavPath(uid).c_str()) != INVALID_FILE_ATTRIBUTES) ++uid;
+    s.uid = uid;
+    s.unnamed = unnamed;
+    s.name = name.empty() ? L"Son " + std::to_wstring(p.sounds.size() + 1) : name.substr(0, 60);
+    s.emoji = L"🔊";
+    s.volume = std::clamp(volume, 0, 200);
+    s.cleaning = std::clamp(cleaning, 0, 100);
+    s.hotkey = freeHotkey();
+    s.source = source;
+    soundimg::renderText(s.emoji, s.image);
+    CreateDirectoryW(p.folder.c_str(), nullptr);
+    if (!sound::writeWav(wavPath(uid), *cleaned)) return L"Impossible d'enregistrer le son dans le dossier « Sons ».";
+    sound::writeWav(rawPath(uid), raw);  // le son d'origine : le nettoyage se règle encore après coup
+    soundimg::savePng(pngPath(uid), s.image);
+    s.samples = cleaned;
+    p.sounds.push_back(std::move(s));
+    saveIndex();
+    if (!p.editor.open) registerHotkeys();
+    relayout();
+    return L"";
 }
 
 // ---------------------------------------------------------------- capture du son du PC
@@ -810,16 +905,17 @@ void openEditor(int index, int pending = -1) {
         const Sound& s = p.sounds[size_t(index)];
         e.samples = s.samples;
         e.image = s.image;
-        setText(p.title, L"Modifier le son");
-        SetWindowTextW(p.name, s.name.c_str());
+        setText(p.title, s.unnamed ? L"Nommer le son gardé en jeu" : L"Modifier le son");
+        SetWindowTextW(p.name, s.unnamed ? L"" : s.name.c_str());
         SetWindowTextW(p.emoji, s.emoji.c_str());
         SendMessageW(p.hotkey, HKM_SETHOTKEY, s.hotkey, 0);
         setSliderPos(p.soundVol, s.volume);
         setSliderPos(p.clean, s.cleaning);
         sound::readWav(rawPath(s.uid), e.raw);  // capture d'origine, si elle a été gardée
         selectAll();
-        e.message = e.raw.empty() ? L"Tu peux recapturer le son, changer l'image, le raccourci ou le volume."
-                                  : L"Tu peux régler le nettoyage, recapturer le son, changer l'image ou le raccourci.";
+        e.message = s.unnamed ? L"Donne un nom à ce son et choisis son image (emoji, image du PC ou ✨ Claude)."
+                    : e.raw.empty() ? L"Tu peux recapturer le son, changer l'image, le raccourci ou le volume."
+                                    : L"Tu peux régler le nettoyage, recapturer le son, changer l'image ou le raccourci.";
     } else {
         setText(p.title, L"Nouveau son");
         SetWindowTextW(p.name, L"");
@@ -870,8 +966,13 @@ void saveEditor() {
         while (findUid(uid) || GetFileAttributesW(wavPath(uid).c_str()) != INVALID_FILE_ATTRIBUTES) ++uid;
         s.uid = uid;
     }
-    s.name = trim(text(p.name));
-    if (s.name.empty()) s.name = L"Son " + std::to_wstring(p.sounds.size() + (isNew ? 1 : 0));
+    const std::wstring typed = trim(text(p.name));
+    if (!typed.empty()) {
+        s.name = typed;
+        s.unnamed = false;
+    } else if (!s.unnamed) {  // un son gardé en jeu reste « à nommer » tant qu'on ne lui donne pas de nom
+        s.name = L"Son " + std::to_wstring(p.sounds.size() + (isNew ? 1 : 0));
+    }
     s.emoji = trim(text(p.emoji));
     s.volume = sliderPos(p.soundVol);
     s.cleaning = sliderPos(p.clean);
@@ -1084,14 +1185,16 @@ void drawWave(const DRAWITEMSTRUCT* d) {
     DeleteDC(dc);
 }
 
-// Raccourci des « 10 dernières secondes » : réglé dans la page des boutons.
-LRESULT CALLBACK replayKeyProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+// Raccourcis des « 10 dernières secondes » (ref 0) et de l'overlay en jeu (ref 1) : réglés dans la page des boutons.
+LRESULT CALLBACK replayKeyProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR ref) {
     if (msg == WM_SETFOCUS) unregisterHotkeys();  // sinon taper le raccourci actuel le déclencherait
     if (msg == WM_KILLFOCUS) {
         LRESULT result = DefSubclassProc(h, msg, wp, lp);
         WORD hk = WORD(SendMessageW(h, HKM_GETHOTKEY, 0, 0));
-        p.replayHotkey = LOBYTE(hk) ? hk : 0;
-        iniWrite(kSection, L"raccourci_replay", std::to_wstring(p.replayHotkey));
+        WORD& target = ref ? p.overlayHotkey : p.replayHotkey;
+        target = LOBYTE(hk) ? hk : 0;
+        iniWrite(kSection, ref ? L"raccourci_overlay" : L"raccourci_replay", std::to_wstring(target));
+        ++p.version;
         if (!p.editor.open) registerHotkeys();
         updateStatus();
         return result;
@@ -1191,9 +1294,10 @@ void drawTile(const DRAWITEMSTRUCT* d) {
         soundimg::draw(dc, s.bitmap, (w - px) / 2 + (pressed ? 1 : 0), S(7) + (pressed ? 1 : 0), px);
 
         HGDIOBJ old = SelectObject(dc, ui.smallFont);
-        SetTextColor(dc, theme::kText);
+        SetTextColor(dc, s.unnamed ? theme::kAmber : theme::kText);  // gardé en jeu : à nommer
         RECT name = {S(3), S(7) + px + S(3), w - S(3), h - S(15)};
-        DrawTextW(dc, s.name.c_str(), -1, &name, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL | DT_NOPREFIX);
+        std::wstring label = s.unnamed ? L"✎ " + s.name : s.name;
+        DrawTextW(dc, label.c_str(), -1, &name, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL | DT_NOPREFIX);
         if (LOBYTE(s.hotkey)) {
             SelectObject(dc, p.tinyFont);
             SetTextColor(dc, s.hotkeyOk ? theme::kFaint : theme::kDanger);
@@ -1231,6 +1335,197 @@ int pendingIndex(HWND h) {
     return -1;
 }
 
+// ---------------------------------------------------------------- Myinstants : recherche, écoute, ajout (sans IA)
+
+void refreshLayout() { PostMessageW(ui.wnd, voicepage::WM_APP_RELAYOUT, 0, 0); }
+
+const Browse::Clip* findClip(const std::string& mp3) {
+    for (const auto& c : p.browse.clips)
+        if (c.first == mp3) return &c.second;
+    return nullptr;
+}
+
+int waitingFor(const std::string& mp3) {
+    for (const auto& w : p.browse.waiting)
+        if (w.first.mp3 == mp3) return w.second;
+    return 0;
+}
+
+bool alreadyAdded(const std::string& mp3) {
+    for (const Sound& s : p.sounds)
+        if (s.source == mp3) return true;
+    return false;
+}
+
+void setBrowseMessage(const std::wstring& message, bool error) {
+    p.browse.message = message;
+    p.browse.messageError = error;
+}
+
+void updateBrowse() {
+    Browse& b = p.browse;
+    setText(p.miTitle, b.query.empty() ? std::wstring(L"Myinstants") : L"Myinstants : « " + b.query + L" »");
+    for (int r = 0; r < kBrowseRows; ++r) {
+        const int i = b.first + r;
+        if (i >= int(b.items.size())) continue;
+        const myinstants::Item& item = b.items[size_t(i)];
+        const int waiting = waitingFor(item.mp3);
+        const bool added = alreadyAdded(item.mp3);
+        setText(p.miName[r], item.title);
+        setText(p.miPlay[r], waiting == 1 ? L"…" : L"▶");
+        setText(p.miAdd[r], added ? L"✓ Ajouté" : waiting == 2 ? L"…" : L"+ Ajouter");
+        EnableWindow(p.miAdd[r], !added && waiting != 2);
+    }
+    const int count = int(b.items.size());
+    setText(p.miPage, count == 0 ? std::wstring()
+                                 : std::to_wstring(b.first + 1) + L"–" + std::to_wstring(std::min(b.first + kBrowseRows, count)) +
+                                       L" sur " + std::to_wstring(count) + (b.more ? L"+" : L""));
+    EnableWindow(p.miPrev, b.first > 0);
+    EnableWindow(p.miNext, b.first + kBrowseRows < count || (b.more && !b.searching));
+    setText(p.miStatus, b.searching ? L"Recherche de « " + b.query + L" » sur Myinstants…" : b.message);
+    InvalidateRect(p.miStatus, nullptr, TRUE);
+}
+
+void startSearch(bool nextPage) {
+    Browse& b = p.browse;
+    if (!nextPage) {
+        const std::wstring query = trim(text(p.miQuery));
+        if (query.empty()) {
+            setBrowseMessage(L"Tape le nom d'un son (par exemple « bruh »), puis Chercher.", true);
+            if (!b.open) {
+                SetFocus(p.miQuery);
+                return;
+            }
+            updateBrowse();
+            return;
+        }
+        b.query = query;
+        b.items.clear();
+        b.sitePage = 0;
+        b.first = 0;
+        b.more = false;
+        b.advance = false;
+    }
+    b.searching = true;
+    b.message.clear();
+    b.searchId = ++b.nextId;
+    myinstants::search(b.query, b.sitePage + 1, b.searchId);
+    b.open = true;
+    refreshLayout();
+}
+
+void closeBrowse() {
+    p.browse.open = false;
+    p.browse.searching = false;
+    p.browse.advance = false;
+    p.browse.searchId = 0;  // une réponse encore en route sera ignorée
+    stopPreview();
+    refreshLayout();
+}
+
+// Le son est téléchargé : on l'écoute (casque seulement) ou on l'ajoute au soundboard.
+void useClip(const myinstants::Item& item, const Browse::Clip& clip, int intent) {
+    const std::wstring cut = clip.truncated ? L" Il dépassait " + std::to_wstring(myinstants::kMaxSeconds) + L" s : il a été coupé." : L"";
+    if (intent == 1) {
+        preview(clip.cleaned, 1.0f);
+        setBrowseMessage(L"▶ « " + item.title + L" », dans ton casque seulement." + cut, false);
+        return;
+    }
+    if (alreadyAdded(item.mp3)) return;
+    const std::wstring error = addSound(item.title, false, *clip.raw, clip.cleaned, 100, 0, item.mp3);
+    if (!error.empty()) {
+        setBrowseMessage(error, true);
+        return;
+    }
+    const Sound& s = p.sounds.back();
+    setBrowseMessage(L"✓ « " + item.title + L" » ajouté au soundboard" + (LOBYTE(s.hotkey) ? L" (" + hotkeyText(s.hotkey) + L")" : L"") +
+                         L". Clic droit sur son bouton pour le renommer ou changer son image." + cut,
+                     false);
+}
+
+void requestClip(int row, int intent) {
+    Browse& b = p.browse;
+    const int i = b.first + row;
+    if (i < 0 || i >= int(b.items.size())) return;
+    const myinstants::Item item = b.items[size_t(i)];
+    if (const Browse::Clip* clip = findClip(item.mp3)) {
+        useClip(item, *clip, intent);
+        updateBrowse();
+        return;
+    }
+    for (auto& w : b.waiting)
+        if (w.first.mp3 == item.mp3) {
+            w.second = std::max(w.second, intent);  // « Ajouter » pendant « Écouter » : on ajoutera
+            updateBrowse();
+            return;
+        }
+    b.waiting.push_back({item, intent});
+    myinstants::fetch(item.mp3, ++b.nextId);
+    updateBrowse();
+}
+
+void onMyinstants(myinstants::Reply& reply) {
+    Browse& b = p.browse;
+    if (reply.isSearch) {
+        if (reply.id != b.searchId) return;  // recherche abandonnée ou remplacée
+        b.searching = false;
+        if (!reply.ok) {
+            setBrowseMessage(reply.error, true);
+            b.advance = false;
+        } else {
+            ++b.sitePage;
+            for (myinstants::Item& item : reply.items) {
+                bool seen = false;
+                for (const myinstants::Item& other : b.items) seen = seen || other.mp3 == item.mp3;
+                if (!seen) b.items.push_back(std::move(item));
+            }
+            b.more = reply.more;
+            if (b.items.empty()) setBrowseMessage(L"Aucun son trouvé pour « " + b.query + L" » sur Myinstants.", true);
+            else if (!b.advance) setBrowseMessage(L"▶ : écouter dans ton casque.   + Ajouter : le son rejoint ton soundboard.", false);
+            if (b.advance && b.first + kBrowseRows < int(b.items.size())) b.first += kBrowseRows;
+            b.advance = false;
+        }
+        refreshLayout();
+        return;
+    }
+    // Un son téléchargé.
+    myinstants::Item item;
+    int intent = 0;
+    for (size_t k = 0; k < b.waiting.size(); ++k)
+        if (b.waiting[k].first.mp3 == reply.mp3) {
+            item = b.waiting[k].first;
+            intent = b.waiting[k].second;
+            b.waiting.erase(b.waiting.begin() + long(k));
+            break;
+        }
+    if (!reply.ok) {
+        setBrowseMessage(reply.error, true);
+    } else {
+        Browse::Clip clip;
+        clip.raw = std::make_shared<const std::vector<float>>(std::move(reply.raw));
+        clip.cleaned = std::make_shared<const std::vector<float>>(std::move(reply.cleaned));
+        clip.truncated = reply.truncated;
+        if (b.clips.size() >= 40) b.clips.erase(b.clips.begin());  // les plus anciens laissent la place
+        b.clips.push_back({reply.mp3, clip});
+        if (intent && b.open) useClip(item, b.clips.back().second, intent);
+    }
+    if (b.open) updateBrowse();
+}
+
+// Entrée dans la barre de recherche : lance la recherche (au lieu du « bip » de Windows).
+LRESULT CALLBACK queryProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (msg == WM_GETDLGCODE && lp) {
+        const MSG* m = reinterpret_cast<const MSG*>(lp);
+        if (m->message == WM_KEYDOWN && m->wParam == VK_RETURN) return DLGC_WANTALLKEYS;
+    }
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        PostMessageW(ui.wnd, WM_COMMAND, MAKEWPARAM(IDC_MI_GO, BN_CLICKED), 0);
+        return 0;
+    }
+    if (msg == WM_CHAR && (wp == L'\r' || wp == L'\n')) return 0;
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- interface publique
@@ -1251,7 +1546,7 @@ void create() {
     p.volume = makeSlider(0, 100, TBS_NOTICKS, IDC_VOLUME);
     SendMessageW(p.volume, TBM_SETPAGESIZE, 0, 10);
     p.stop = theme::button(L"■ Stop", theme::Kind::kButton, IDC_STOP);
-    p.hear = theme::button(L"M'entendre aussi dans le casque", theme::Kind::kToggle, IDC_HEAR);
+    p.hear = theme::button(L"Entendre les sons du soundboard", theme::Kind::kToggle, IDC_HEAR);
     p.status = makeControl(L"STATIC", L"", SS_LEFT);
     p.hint = makeControl(L"STATIC", L"Clic droit sur un son : modifier, déplacer, supprimer.\nCtrl+Maj+0 : arrêter tous les sons.",
                          SS_LEFT);
@@ -1301,6 +1596,33 @@ void create() {
                  MAKELPARAM(HOTKEYF_CONTROL | HOTKEYF_SHIFT, 0));
     SetWindowSubclass(p.replayKey, replayKeyProc, 1, 0);
     p.replayNone = theme::button(L"Aucun", theme::Kind::kButton, IDC_REPLAYNONE);
+    p.overlayLabel = makeControl(L"STATIC", L"Overlay en jeu :", SS_LEFT | SS_CENTERIMAGE);
+    p.overlayKey = theme::hotkeyBox(IDC_OVERLAYKEY);
+    SendMessageW(p.overlayKey, HKM_SETRULES, HKCOMB_NONE | HKCOMB_S | HKCOMB_CA | HKCOMB_SCA,
+                 MAKELPARAM(HOTKEYF_CONTROL | HOTKEYF_SHIFT, 0));
+    SetWindowSubclass(p.overlayKey, replayKeyProc, 1, 1);
+    p.overlayNone = theme::button(L"Aucun", theme::Kind::kButton, IDC_OVERLAYNONE);
+
+    // Myinstants : barre de recherche, puis la page des résultats.
+    p.miLabel = makeControl(L"STATIC", L"Myinstants :", SS_LEFT | SS_CENTERIMAGE);
+    p.miQuery = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, ui.wnd,
+                                reinterpret_cast<HMENU>(INT_PTR(IDC_MI_QUERY)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(p.miQuery, EM_SETCUEBANNER, TRUE, LPARAM(L"chercher un son (ex. : bruh)"));
+    SendMessageW(p.miQuery, EM_LIMITTEXT, 80, 0);
+    theme::darkControl(p.miQuery);
+    SetWindowSubclass(p.miQuery, queryProc, 1, 0);
+    p.miGo = theme::button(L"🔎 Chercher", theme::Kind::kButton, IDC_MI_GO);
+    p.miTitle = makeControl(L"STATIC", L"Myinstants", SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS | SS_NOPREFIX);
+    for (int r = 0; r < kBrowseRows; ++r) {
+        p.miName[r] = makeControl(L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS | SS_NOPREFIX, IDC_MI_NAME0 + r);
+        p.miPlay[r] = theme::button(L"▶", theme::Kind::kButton, IDC_MI_PLAY0 + r);
+        p.miAdd[r] = theme::button(L"+ Ajouter", theme::Kind::kButton, IDC_MI_ADD0 + r);
+    }
+    p.miPrev = theme::button(L"← Précédents", theme::Kind::kButton, IDC_MI_PREV);
+    p.miNext = theme::button(L"Suivants →", theme::Kind::kButton, IDC_MI_NEXT);
+    p.miPage = makeControl(L"STATIC", L"", SS_CENTER | SS_CENTERIMAGE);
+    p.miStatus = makeControl(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, IDC_MI_STATUS);
+    p.miBack = theme::button(L"← Retour au soundboard", theme::Kind::kButton, IDC_MI_BACK);
     theme::darkControl(p.name);
     theme::darkControl(p.emoji);
     p.wave = makeControl(L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, IDC_WAVE);
@@ -1311,9 +1633,45 @@ void create() {
 int layout(int top, bool shown) {
     p.shown = shown;
     createFonts();
-    const int margin = 20, width = 400, inner = width - 2 * margin;
-    const bool grid = shown && !p.editor.open, edit = shown && p.editor.open;
+    const int margin = 20, width = ui.width, inner = width - 2 * margin;
+    const bool browsing = shown && !p.editor.open && p.browse.open;  // résultats de Myinstants
+    const bool grid = shown && !p.editor.open && !p.browse.open, edit = shown && p.editor.open;
     int y = top + 6;
+
+    // ---- Myinstants : la barre de recherche (sous les boutons, ou en haut des résultats)
+    for (HWND h : {p.miLabel, p.miQuery, p.miGo}) show(h, grid || browsing);
+    for (HWND h : {p.miTitle, p.miPrev, p.miNext, p.miPage, p.miStatus, p.miBack}) show(h, browsing);
+    for (int r = 0; r < kBrowseRows; ++r) {
+        const bool row = browsing && p.browse.first + r < int(p.browse.items.size());
+        for (HWND h : {p.miName[r], p.miPlay[r], p.miAdd[r]}) show(h, row);
+    }
+    auto searchRow = [&](int at) {
+        place(p.miLabel, margin, at, 92, 28, ui.smallFont);
+        theme::placeInput(p.miQuery, margin + 92, at, inner - 92 - 120, 28, ui.font);
+        place(p.miGo, width - margin - 112, at, 112, 28, ui.smallFont);
+    };
+    if (p.browse.open && !p.editor.open) {
+        searchRow(y);
+        y += 38;
+        place(p.miTitle, margin, y, inner, 26, ui.font);
+        y += 30;
+        for (int r = 0; r < kBrowseRows; ++r) {
+            const int rowY = y + r * 34;
+            place(p.miName[r], margin, rowY, inner - 44 - 6 - 108 - 8, 30, ui.font);
+            place(p.miPlay[r], width - margin - 108 - 6 - 44, rowY, 44, 30, ui.font);
+            place(p.miAdd[r], width - margin - 108, rowY, 108, 30, ui.smallFont);
+        }
+        y += kBrowseRows * 34 + 6;
+        place(p.miPrev, margin, y, 130, 30, ui.smallFont);
+        place(p.miPage, margin + 130, y, inner - 260, 30, ui.smallFont);
+        place(p.miNext, width - margin - 130, y, 130, 30, ui.smallFont);
+        y += 40;
+        place(p.miStatus, margin, y, inner, 36, ui.smallFont);
+        y += 42;
+        place(p.miBack, margin, y, 220, 32, ui.font);
+        y += 44;
+        if (browsing) updateBrowse();
+    }
 
     // ---- les boutons
     const int count = int(p.sounds.size()), waiting = int(p.pending.size());
@@ -1321,7 +1679,8 @@ int layout(int top, bool shown) {
     for (int i = 0; i < kMaxPending; ++i) show(p.pendingTiles[i], grid && i < waiting);
     show(p.add, grid && count < kMaxSounds);
     show(p.empty, grid && count == 0 && waiting == 0);
-    for (HWND h : {p.volumeLabel, p.volume, p.stop, p.replayLabel, p.replayKey, p.replayNone, p.hear, p.status, p.hint})
+    for (HWND h : {p.volumeLabel, p.volume, p.stop, p.replayLabel, p.replayKey, p.replayNone, p.overlayLabel, p.overlayKey,
+                   p.overlayNone, p.hear, p.status, p.hint})
         show(h, grid);
     const bool trimming = p.editor.pending >= 0, hasWave = !p.editor.raw.empty();
     HWND editors[] = {p.title,   p.nameLabel,  p.name,        p.listen,
@@ -1332,16 +1691,20 @@ int layout(int top, bool shown) {
     for (HWND h : {p.durationLabel, p.duration, p.capture, p.progress}) show(h, edit && !trimming);  // découpage : pas de capture
     for (HWND h : {p.wave, p.selLabel}) show(h, edit && hasWave);
 
+    if (p.browse.open && !p.editor.open) return y;
     if (!p.editor.open) {
-        // Les sons, puis les captures « à trier », puis « + ».
+        // Les sons, puis les captures « à trier », puis « + ». Cinq par ligne, aussi larges que la fenêtre le permet.
+        const int tileW = (inner - (kColumns - 1) * kGap) / kColumns;
         int tiles = count + waiting + (count < kMaxSounds ? 1 : 0);
         for (int i = 0; i < tiles; ++i) {
             HWND h = i < count ? p.tiles[i] : i < count + waiting ? p.pendingTiles[i - count] : p.add;
-            place(h, margin + (i % kColumns) * (kTileW + kGap), y + (i / kColumns) * (kTileH + kGap), kTileW, kTileH, ui.smallFont);
+            place(h, margin + (i % kColumns) * (tileW + kGap), y + (i / kColumns) * (kTileH + kGap), tileW, kTileH, ui.smallFont);
             InvalidateRect(h, nullptr, FALSE);
         }
-        if (count == 0 && waiting == 0) place(p.empty, margin + kTileW + 14, y + 30, inner - kTileW - 14, kTileH - 30, ui.smallFont);
+        if (count == 0 && waiting == 0) place(p.empty, margin + tileW + 14, y + 30, inner - tileW - 14, kTileH - 30, ui.smallFont);
         y += ((tiles + kColumns - 1) / kColumns) * (kTileH + kGap) + 6;
+        searchRow(y);  // chercher un son sur Myinstants
+        y += 38;
         place(p.volumeLabel, margin, y, 104, 30, ui.smallFont);
         place(p.volume, margin + 104, y, inner - 104 - 90, 30, ui.font);
         place(p.stop, width - margin - 84, y, 84, 30, ui.font);
@@ -1349,6 +1712,10 @@ int layout(int top, bool shown) {
         place(p.replayLabel, margin, y, 150, 26, ui.smallFont);
         place(p.replayKey, margin + 150, y, inner - 150 - 90, 26, ui.font);
         place(p.replayNone, width - margin - 80, y, 80, 26, ui.smallFont);
+        y += 34;
+        place(p.overlayLabel, margin, y, 150, 26, ui.smallFont);
+        place(p.overlayKey, margin + 150, y, inner - 150 - 90, 26, ui.font);
+        place(p.overlayNone, width - margin - 80, y, 80, 26, ui.smallFont);
         y += 34;
         place(p.hear, margin, y, inner, 22, ui.smallFont);
         y += 30;
@@ -1428,6 +1795,34 @@ bool onCommand(WPARAM wp, LPARAM) {
         openEditor(-1, id - IDC_PENDING0);
         return true;
     }
+    // Myinstants
+    if (code == BN_CLICKED && id >= IDC_MI_PLAY0 && id < IDC_MI_PLAY0 + kBrowseRows) {
+        requestClip(id - IDC_MI_PLAY0, 1);
+        return true;
+    }
+    if (code == BN_CLICKED && id >= IDC_MI_ADD0 && id < IDC_MI_ADD0 + kBrowseRows) {
+        requestClip(id - IDC_MI_ADD0, 2);
+        return true;
+    }
+    if (code == BN_CLICKED && (id == IDC_MI_GO || id == IDC_MI_PREV || id == IDC_MI_NEXT || id == IDC_MI_BACK)) {
+        Browse& b = p.browse;
+        if (id == IDC_MI_GO) startSearch(false);
+        if (id == IDC_MI_BACK) closeBrowse();
+        if (id == IDC_MI_PREV) {
+            b.first = std::max(0, b.first - kBrowseRows);
+            refreshLayout();
+        }
+        if (id == IDC_MI_NEXT) {
+            if (b.first + kBrowseRows < int(b.items.size())) {
+                b.first += kBrowseRows;
+                refreshLayout();
+            } else if (b.more && !b.searching) {
+                b.advance = true;  // la page suivante du site, puis on avance
+                startSearch(true);
+            }
+        }
+        return true;
+    }
     switch (id) {
     case IDC_ADD: openEditor(-1); return true;
     case IDC_REPLAYNONE:
@@ -1435,6 +1830,14 @@ bool onCommand(WPARAM wp, LPARAM) {
         p.replayHotkey = 0;
         iniWrite(kSection, L"raccourci_replay", L"0");
         registerHotkeys();
+        updateStatus();
+        return true;
+    case IDC_OVERLAYNONE:
+        SendMessageW(p.overlayKey, HKM_SETHOTKEY, 0, 0);
+        p.overlayHotkey = 0;
+        iniWrite(kSection, L"raccourci_overlay", L"0");
+        registerHotkeys();
+        overlay::hide();
         updateStatus();
         return true;
     case IDC_STOP: stopAllSounds(); return true;
@@ -1586,6 +1989,7 @@ bool onContextMenu(HWND control, int x, int y) {
         int other = index + (choice == kMenuLeft ? -1 : 1);
         std::swap(p.sounds[size_t(index)], p.sounds[size_t(other)]);
         saveIndex();
+        ++p.version;
         InvalidateRect(p.tiles[index], nullptr, FALSE);
         InvalidateRect(p.tiles[other], nullptr, FALSE);
         break;
@@ -1604,6 +2008,10 @@ bool onHotkey(int id) {
         captureReplay();
         return true;
     }
+    if (id == kOverlayHotkeyId) {
+        overlay::toggle();
+        return true;
+    }
     if (Sound* s = findUid(id - kHotkeyBase)) {
         playSound(*s);
         return true;
@@ -1616,8 +2024,12 @@ bool isStatus(HWND h, bool& error) {
         error = !p.notice.empty() ? p.noticeError : !p.hotkeyError.empty() || !voicepage::running();
         return true;
     }
-    if (h == p.selLabel) {
+    if (h == p.selLabel || h == p.miLabel || h == p.miPage) {
         error = false;
+        return true;
+    }
+    if (h == p.miStatus) {
+        error = p.browse.messageError && !p.browse.searching;
         return true;
     }
     if (h == p.message) {
@@ -1625,7 +2037,8 @@ bool isStatus(HWND h, bool& error) {
         return true;
     }
     if (h == p.hint || h == p.imageHint || h == p.empty || h == p.nameLabel || h == p.durationLabel || h == p.cleanLabel ||
-        h == p.imageLabel || h == p.hotkeyLabel || h == p.soundVolLabel || h == p.volumeLabel || h == p.replayLabel) {
+        h == p.imageLabel || h == p.hotkeyLabel || h == p.soundVolLabel || h == p.volumeLabel || h == p.replayLabel ||
+        h == p.overlayLabel) {
         error = false;
         return true;
     }
@@ -1648,6 +2061,10 @@ void onTimer() {
         if (p.shown && !p.editor.open) updateStatus();
     }
     if (p.player.lost) closePlayer();  // casque débranché : on rouvrira au prochain son
+
+    // Myinstants : résultats de recherche et sons téléchargés.
+    myinstants::Reply reply;
+    while (myinstants::take(reply)) onMyinstants(reply);
 
     // ✨ Réponse de Claude : on l'applique si l'éditeur qui l'a demandée est toujours ouvert.
     static claude::Status lastStatus = claude::Status::kChecking;
@@ -1689,6 +2106,129 @@ void onTimer() {
         p.notice.clear();
         if (p.shown && !p.editor.open) updateStatus();
     }
+    overlay::onTimer();
+}
+
+// ---------------------------------------------------------------- pour l'overlay en jeu
+
+uint32_t boardVersion() { return p.version; }
+
+std::vector<BoardSound> boardSounds() {
+    std::vector<BoardSound> list;
+    for (const Sound& s : p.sounds) list.push_back({s.uid, soundTag(s), s.name, &s.image, s.unnamed, s.hotkeyOk ? hotkeyText(s.hotkey) : L""});
+    return list;
+}
+
+std::vector<BoardCapture> boardCaptures() {
+    std::vector<BoardCapture> list;
+    for (const Pending& q : p.pending) list.push_back({q.file, q.time});
+    return list;
+}
+
+uint64_t playingMask() { return g_cable.playing() | g_local.playing(); }
+
+void playUid(int uid) {
+    if (Sound* s = findUid(uid)) playSound(*s);
+}
+
+void stopSounds() { stopAllSounds(); }
+
+bool soundsGoToMic() { return voicepage::running(); }
+
+bool hearsInHeadset() { return hearMyself(); }
+
+void preview(const BoardSamples& samples, float gain) {
+    if (!samples || samples->empty() || !openPlayer()) return;
+    g_local.stopAll();
+    if (p.lastPreview && p.lastPreview != samples) p.retired.push_back(p.lastPreview);  // peut encore jouer
+    p.lastPreview = samples;
+    g_local.play(samples->data(), int(samples->size()), gain, kPreviewTag);
+}
+
+void stopPreview() { g_local.stopAll(); }
+
+int defaultCleaning() { return std::clamp(iniReadInt(kSection, L"nettoyage", 60), 0, 100); }
+int defaultSeconds() { return std::clamp(iniReadInt(kSection, L"duree", 3), 1, kMaxDuration); }
+std::wstring overlayHotkeyText() { return hotkeyText(p.overlayHotkey); }
+
+namespace {
+int pendingByFile(const std::wstring& file) {
+    for (int i = 0; i < int(p.pending.size()); ++i)
+        if (sameText(p.pending[size_t(i)].file, file)) return i;
+    return -1;
+}
+
+// La capture quitte la liste : l'éditeur du bureau ne doit pas garder un numéro périmé.
+void forgetPending(int index) {
+    if (p.editor.open && p.editor.pending >= 0) {
+        if (p.editor.pending == index) closeEditor();
+        else if (p.editor.pending > index) --p.editor.pending;
+    }
+    DeleteFileW(p.pending[size_t(index)].file.c_str());
+    p.pending.erase(p.pending.begin() + index);
+}
+}  // namespace
+
+std::wstring keepCapture(const std::wstring& file, const std::vector<float>& raw, size_t selStart, size_t selEnd, int volume,
+                         int cleaning, const BoardSamples& cleaned) {
+    if (!cleaned || cleaned->empty()) return L"Le passage choisi est silencieux : choisis-en un autre.";
+    if (int(p.sounds.size()) >= kMaxSounds)
+        return L"Le soundboard est plein (" + std::to_wstring(kMaxSounds) + L" sons) : supprimes-en un sur le bureau.";
+    const int index = pendingByFile(file);
+    if (index < 0) return L"Cette capture n'existe plus.";
+    selEnd = std::min(selEnd, raw.size());
+    selStart = std::min(selStart, selEnd);
+    const std::vector<float> kept(raw.begin() + long(selStart), raw.begin() + long(selEnd));
+    std::wstring error = addSound(L"", true, kept, cleaned, volume, cleaning, "");
+    if (error.empty()) {
+        forgetPending(index);
+        relayout();
+    }
+    return error;
+}
+
+void discardCapture(const std::wstring& file) {
+    const int index = pendingByFile(file);
+    if (index < 0) return;
+    forgetPending(index);
+    relayout();
+}
+
+// ---------------------------------------------------------------- télécommande du téléphone
+
+std::string remoteJson() {
+    auto flag = [](bool b) { return std::string(b ? "true" : "false"); };
+    const uint64_t playing = playingMask();
+    std::string sounds = "[";
+    for (const Sound& s : p.sounds) {
+        if (sounds.size() > 1) sounds += ",";
+        sounds += "{\"uid\":" + std::to_string(s.uid) + ",\"name\":" + jsonText(s.name) + ",\"unnamed\":" + flag(s.unnamed) +
+                  ",\"playing\":" + flag((playing >> soundTag(s)) & 1) + "}";
+    }
+    sounds += "]";
+    return "{\"version\":" + std::to_string(p.version) + ",\"sounds\":" + sounds + ",\"mic\":" + flag(voicepage::running()) +
+           ",\"hear\":" + flag(hearMyself()) + ",\"captures\":" + std::to_string(p.pending.size()) +
+           ",\"volume\":" + std::to_string(sliderPos(p.volume)) + ",\"notice\":" + jsonText(p.notice) +
+           ",\"noticeErr\":" + flag(p.noticeError) + ",\"noticeId\":" + std::to_string(p.notice.empty() ? 0 : p.noticeTick) +
+           ",\"replayKey\":" + jsonText(hotkeyText(p.replayHotkey)) + "}";
+}
+
+void remoteCommand(const std::string& action, int a, int) {
+    if (action == "play") {
+        playUid(a);
+    } else if (action == "stop") {
+        stopAllSounds();
+    } else if (action == "replay") {
+        captureReplay();
+    } else if (action == "volume") {
+        setSliderPos(p.volume, std::clamp(a, 0, 100));
+        applyVolume(true);
+    }
+}
+
+bool remoteImage(int uid, std::string& png) {
+    const Sound* s = findUid(uid);
+    return s && !s->image.empty() && soundimg::encodePng(s->image.pixels.data(), soundimg::kSize, soundimg::kSize, true, png);
 }
 
 void startup() {
@@ -1710,6 +2250,9 @@ void startup() {
     std::wstring replayKey = iniRead(kSection, L"raccourci_replay");
     p.replayHotkey = replayKey.empty() ? kDefaultReplayHotkey : WORD(_wtoi(replayKey.c_str()));
     SendMessageW(p.replayKey, HKM_SETHOTKEY, p.replayHotkey, 0);
+    std::wstring overlayKey = iniRead(kSection, L"raccourci_overlay");
+    p.overlayHotkey = overlayKey.empty() ? kDefaultOverlayHotkey : WORD(_wtoi(overlayKey.c_str()));
+    SendMessageW(p.overlayKey, HKM_SETHOTKEY, p.overlayHotkey, 0);
     makeBips();
     soundimg::renderText(L"✂️", p.scissors);
     claude::check();  // en arrière-plan : Claude Code est-il installé et connecté ?
@@ -1725,6 +2268,7 @@ void startup() {
 }
 
 void shutdown() {
+    overlay::shutdown();
     closeRecorder();
     unregisterHotkeys();
     claude::shutdown();
